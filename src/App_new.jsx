@@ -160,8 +160,7 @@ function App() {
 
   const finishHand = () => {
     const state = engineRef.current.getState();
-    const result = state.handLog?.result;
-    const { playerStack, botStack } = state;
+    const { result, playerStack, botStack } = state;
     if (!result) return;
 
     let resultMessage = '';
@@ -185,7 +184,7 @@ function App() {
     if (!isPlayerTurn) return;
 
     const success = engineRef.current.playerAction(action, amount);
-    if (success === false) return;
+    if (!success) return;
 
     setMessage(`You ${action}${amount ? ` ${amount}` : ''}.`);
     syncState();
