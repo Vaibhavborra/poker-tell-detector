@@ -77,20 +77,21 @@ function BetBadge({ amount }) {
   return (
     <div style={{
       display: 'flex', justifyContent: 'center', alignItems: 'center',
-      height: visible ? 38 : 0,
+      maxHeight: visible ? 60 : 0,
       opacity: visible ? 1 : 0,
-      overflow: 'hidden',
-      transition: 'height 300ms ease, opacity 300ms ease',
-      marginTop: visible ? 6 : 0,
+      overflow: 'visible',
+      transition: 'max-height 300ms ease, opacity 300ms ease',
+      padding: visible ? '6px 0' : '0',
     }}>
       <div style={{
         width: 44, height: 44, borderRadius: '50%',
         background: 'radial-gradient(circle at 35% 35%, #f5c842, #c8880a)',
         border: '2px solid #f0d060',
-        boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+        boxShadow: '0 2px 10px rgba(0,0,0,0.5)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         fontSize: amount >= 1000 ? 10 : amount >= 100 ? 11 : 13,
         fontWeight: 800, color: '#1a0e00',
+        flexShrink: 0,
       }}>{amount}</div>
     </div>
   );
@@ -278,6 +279,16 @@ export default function App() {
             ))}
           </div>
           <div style={msgTxt}>{message}</div>
+          {revealBot && gameState.handLog?.result?.method === 'showdown' && (
+            <div style={handNamesRow}>
+              <span style={handNameTag('player', gameState.winner)}>
+                You: {gameState.handLog.result.playerHand?.name ?? '—'}
+              </span>
+              <span style={handNameTag('bot', gameState.winner)}>
+                Bot: {gameState.handLog.result.botHand?.name ?? '—'}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Player panel */}
@@ -414,6 +425,14 @@ const cardSlot = (i, active, rm) => ({
   transition: rm ? 'none' : `transform 240ms ease ${i*55}ms, opacity 240ms ease ${i*55}ms`,
 });
 const msgTxt = { fontSize: 13, color: '#dce8ff', textAlign: 'center', lineHeight: 1.4 };
+const handNamesRow = { display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' };
+const handNameTag = (who, winner) => ({
+  fontSize: 12, fontWeight: 700,
+  padding: '3px 10px', borderRadius: 999,
+  background: winner === who ? 'rgba(255,210,73,0.18)' : 'rgba(255,255,255,0.06)',
+  color: winner === who ? '#f5c842' : '#8aa8cc',
+  border: winner === who ? '1px solid rgba(255,210,73,0.4)' : '1px solid rgba(255,255,255,0.08)',
+});
 
 const actionBar = (disabled) => ({
   flexShrink: 0,
