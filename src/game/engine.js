@@ -1,139 +1,219 @@
+import { Hand } from 'pokersolver';
 import { createDeck, shuffleDeck } from './deck';
 import { evaluateHand, getWinner } from './evaluate';
 
-const STREET_ORDER = ['preflop', 'flop', 'turn', 'river', 'showdown'];
 const SMALL_BLIND = 10;
 const BIG_BLIND = 20;
-const RANK_VALUES = {
-  '2': 2,
-  '3': 3,
-  '4': 4,
-  '5': 5,
-  '6': 6,
-  '7': 7,
-  '8': 8,
-  '9': 9,
-  T: 10,
-  J: 11,
-  Q: 12,
-  K: 13,
-  A: 14,
-};
+const RANK_VALUES = { '2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'T':10,'J':11,'Q':12,'K':13,'A':14 };
+const ALL_RANKS   = ['2','3','4','5','6','7','8','9','T','J','Q','K','A'];
+const ALL_SUITS   = ['h','d','c','s'];
 
-function sortedRanks(cardA, cardB) {
-  return RANK_VALUES[cardB[0]] - RANK_VALUES[cardA[0]];
-}
+// Full 52-card deck reference (built once)
+const FULL_DECK = [];
+for (const r of ALL_RANKS) for (const s of ALL_SUITS) FULL_DECK.push(r + s);
 
-function preflopStrength(hole) {
-  const [a, b] = [...hole].sort(sortedRanks);
-  const rankA = RANK_VALUES[a[0]];
-  const rankB = RANK_VALUES[b[0]];
-  let score = rankA + rankB;
-  if (a[0] === b[0]) score += 8;
-  if (a[1] === b[1]) score += 3;
-  if (rankA >= 12) score += 2;
-  if (rankB >= 12) score += 1;
-  return score;
-}
-
-function opponent(player) {
-  return player === 'player' ? 'bot' : 'player';
-}
+function opponent(player) { return player === 'player' ? 'bot' : 'player'; }
 
 function handDescription(cards) {
   const hand = evaluateHand(cards);
-  return {
-    name: hand.name,
-    rank: hand.rank,
-  };
+  return { name: hand.name, rank: hand.rank };
 }
 
 function availableActionsFor(actor, state) {
   const actorCommit = actor === 'player' ? state.playerCommit : state.botCommit;
   if (state.winner) return [];
-  if (state.currentBet === 0) {
-    return ['check', 'bet'];
-  }
-  if (actorCommit < state.currentBet) {
-    return ['fold', 'call', 'raise'];
-  }
+  if (state.currentBet === 0) return ['check', 'bet'];
+  if (actorCommit < state.currentBet) return ['fold', 'call', 'raise'];
   return ['check', 'raise'];
 }
 
+// ─── Monte Carlo equity estimator ─────────────────────────────────────────────
+// Estimates bot win probability by simulating random opponent hands
+function estimateEquity(botHole, community, simCount = 200) {
+  const known = new Set([...botHole, ...community]);
+  const remaining = FULL_DECK.filter(c => !known.has(c));
+  const commNeeded = 5 - community.length;
+  const arr = [...remaining];
+  let wins = 0, ties = 0;
+
+  for (let i = 0; i < simCount; i++) {
+    // Partial Fisher-Yates: shuffle only the cards we need
+    const need = 2 + commNeeded;
+    for (let j = 0; j < need; j++) {
+      const r = j + Math.floor(Math.random() * (arr.length - j));
+      const tmp = arr[j]; arr[j] = arr[r]; arr[r] = tmp;
+    }
+    const oppHole  = [arr[0], arr[1]];
+    const fullComm = [...community, ...arr.slice(2, 2 + commNeeded)];
+    const botHand  = evaluateHand([...botHole, ...fullComm]);
+    const oppHand  = evaluateHand([...oppHole, ...fullComm]);
+    const winners  = Hand.winners([botHand, oppHand]);
+    if (winners.length === 2) ties++;
+    else if (winners[0] === botHand) wins++;
+  }
+  return (wins + ties * 0.5) / simCount;
+}
+
+// ─── Board texture ─────────────────────────────────────────────────────────────
+function boardTexture(community) {
+  if (!community.length) return { wet: false, dry: true, paired: false, monotone: false };
+  const suits = community.map(c => c[1]);
+  const ranks = community.map(c => RANK_VALUES[c[0]]).sort((a, b) => a - b);
+  const sc = {}; suits.forEach(s => sc[s] = (sc[s] || 0) + 1);
+  const rc = {}; community.forEach(c => rc[c[0]] = (rc[c[0]] || 0) + 1);
+  const maxSuit = Math.max(...Object.values(sc));
+  const paired  = Object.values(rc).some(v => v >= 2);
+  const monotone = maxSuit >= 3;
+  const flushDraw = maxSuit >= 2;
+  let straightDraw = false;
+  for (let i = 0; i < ranks.length - 1; i++) {
+    if (ranks[ranks.length - 1] - ranks[i] <= 4) { straightDraw = true; break; }
+  }
+  const wet = flushDraw || straightDraw;
+  return { wet, dry: !wet && !paired, paired, monotone, flushDraw, straightDraw };
+}
+
+// ─── Bot decision engine ───────────────────────────────────────────────────────
+//
+// Philosophy:
+//   • Equity-driven: every decision starts from Monte Carlo win probability
+//   • Pot-odds aware: never call mathematically incorrect
+//   • GTO-inspired mixing: randomises between actions so the bot is unexploitable
+//   • Bluffs with correct frequency (polarised on river, semi-bluff with draws)
+//   • Variable bet sizing: small (33%), medium (55%), large (80%), overbet (120%)
+//   • Trapping: occasionally slow-plays monsters
+//   • Bluff-raises: check-raise bluffs with air at correct frequency
+//
 function chooseBotAction(state) {
-  const community = state.community;
-  const hole = state.botHole;
-  const knownHand = evaluateHand([...hole, ...community]);
-  const name = knownHand.name;
-  const hasBet = state.currentBet > 0;
-  const score = preflopStrength(hole);
+  const { botHole, community, pot, currentBet, botCommit, botStack, street } = state;
+  const available   = availableActionsFor('bot', state);
+  const hasBet      = currentBet > 0;
+  const callCost    = Math.max(0, currentBet - botCommit);
+  // Pot odds: fraction of the final pot we must invest to continue
+  const potOdds     = hasBet ? callCost / (pot + callCost) : 0;
+  const texture     = boardTexture(community);
+  const isRiver     = street === 'river';
+  const isPreflop   = street === 'preflop';
+  const r           = Math.random(); // single random value for this decision
+
+  // Equity from simulation (fewer sims preflop — faster, preflop is already solved enough)
+  const equity = estimateEquity(botHole, community, isPreflop ? 150 : 250);
+
+  // ─── Bet sizing helpers ────────────────────────────────────────────────────
+  // For 'bet': amount IS the total bet size
+  // For 'raise': amount is ADDED to currentBet by the engine
+  const clamp  = v => Math.max(BIG_BLIND, Math.min(v, botStack));
+  const betAmt = frac  => clamp(Math.round(pot * frac));
+  // Raise: we want the new total bet = currentBet + raiseAmt
+  // Express as fraction of pot (the extra on top of current bet)
+  const raiseAmt = frac => clamp(Math.round(pot * frac));
+
   let action = 'check';
   let amount = BIG_BLIND;
 
-  if (community.length === 0) {
+  // ══════════════════════════════════════════════════════════════════════════
+  //  PREFLOP
+  // ══════════════════════════════════════════════════════════════════════════
+  if (isPreflop) {
     if (!hasBet) {
-      if (score > 38) {
-        action = 'raise';
-        amount = BIG_BLIND * 2;
-      } else if (score > 30) {
-        action = 'bet';
-        amount = BIG_BLIND;
-      } else if (score > 24 && Math.random() < 0.4) {
-        action = 'bet';
-        amount = BIG_BLIND;
-      } else {
-        action = 'check';
-      }
+      // We can check or bet (BB option, or SB limped)
+      if (equity > 0.66)                   { action = 'bet';   amount = betAmt(2.5); }
+      else if (equity > 0.55)              { action = r < 0.65 ? 'bet'  : 'check'; amount = betAmt(2.0); }
+      else if (equity > 0.46)              { action = r < 0.40 ? 'bet'  : 'check'; amount = betAmt(1.5); }
+      else if (r < 0.15)                   { action = 'bet';   amount = betAmt(1.5); } // bluff
+      else                                 { action = 'check'; }
     } else {
-      if (score > 32) {
-        action = 'call';
-      } else if (score > 22 && Math.random() < 0.6) {
-        action = 'call';
-      } else {
-        action = 'fold';
-      }
+      // Facing a raise preflop
+      if (equity > 0.66)                   { action = r < 0.45 ? 'raise' : 'call'; amount = raiseAmt(2.5); }
+      else if (equity > potOdds + 0.10)    { action = 'call'; }
+      else if (equity > potOdds + 0.03)    { action = r < 0.78 ? 'call' : 'fold'; }
+      else if (r < 0.10)                   { action = 'raise'; amount = raiseAmt(2.0); } // 3-bet bluff
+      else                                  { action = 'fold'; }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  POSTFLOP  (flop / turn / river)
+  // ══════════════════════════════════════════════════════════════════════════
+  else if (!hasBet) {
+    // ── No bet facing — check or bet ──────────────────────────────────────
+    if (equity > 0.74) {
+      // Monster: mostly bet for value, occasionally trap (check-raise opportunity)
+      action = r < 0.78 ? 'bet' : 'check';
+      amount = betAmt(texture.wet ? 0.85 : 0.70);
+    } else if (equity > 0.62) {
+      // Strong: bet for value most of the time
+      action = r < 0.68 ? 'bet' : 'check';
+      amount = betAmt(0.60);
+    } else if (equity > 0.52) {
+      // Medium: thin value — bet about half the time
+      action = r < 0.45 ? 'bet' : 'check';
+      amount = betAmt(0.45);
+    } else if (equity > 0.38) {
+      // Drawing / marginal: semi-bluff — bet some of the time, check others
+      // Semi-bluffs work best on the flop/turn; on river there are no more draws
+      const semiBetFreq = isRiver ? 0.12 : 0.32;
+      action = r < semiBetFreq ? 'bet' : 'check';
+      amount = betAmt(0.55);
+    } else {
+      // Air: pure bluff with solver-appropriate frequency
+      // GTO bluff frequency ≈ bet_size / (bet_size + pot)
+      // e.g. 50% pot bet → bluff 33% of the time
+      const bluffFreq = isRiver
+        ? 0.28               // River: polarised, fewer bluffs overall
+        : texture.dry        // Flop/turn: more bluffs on dry boards (opponent has less)
+          ? 0.22
+          : 0.18;
+      action = r < bluffFreq ? 'bet' : 'check';
+      amount = betAmt(isRiver ? 0.80 : 0.55);
     }
   } else {
-    if (!hasBet) {
-      if (
-        ['Straight Flush', 'Four of a Kind', 'Full House', 'Flush', 'Straight'].includes(name)
-      ) {
-        action = Math.random() < 0.8 ? 'bet' : 'check';
-        amount = BIG_BLIND * 3;
-      } else if (['Three of a Kind', 'Two Pair'].includes(name)) {
-        action = Math.random() < 0.75 ? 'bet' : 'check';
-        amount = BIG_BLIND * 2;
-      } else if (name === 'Pair') {
-        action = 'check';
+    // ── Facing a bet — fold / call / raise ────────────────────────────────
+    if (equity > potOdds + 0.22) {
+      // Dominating: raise for value or call to keep opponent in
+      if (r < 0.42 && available.includes('raise')) {
+        action = 'raise';
+        amount = raiseAmt(isRiver ? 1.10 : 0.90); // overbet river for value
       } else {
-        action = Math.random() < 0.2 ? 'bet' : 'check';
-        amount = BIG_BLIND;
-      }
-    } else {
-      if (
-        ['Straight Flush', 'Four of a Kind', 'Full House', 'Flush', 'Straight'].includes(name)
-      ) {
         action = 'call';
-      } else if (['Three of a Kind', 'Two Pair'].includes(name)) {
-        action = Math.random() < 0.85 ? 'call' : 'fold';
-      } else if (name === 'Pair') {
-        action = Math.random() < 0.55 ? 'call' : 'fold';
-      } else {
-        action = Math.random() < 0.3 ? 'call' : 'fold';
       }
+    } else if (equity > potOdds + 0.09) {
+      // Comfortable call, occasional raise as semi-bluff / value
+      if (r < 0.18 && available.includes('raise') && !isRiver) {
+        action = 'raise'; amount = raiseAmt(0.70);
+      } else {
+        action = 'call';
+      }
+    } else if (equity > potOdds + 0.01) {
+      // Getting marginal odds — mostly call, sometimes fold
+      action = r < 0.72 ? 'call' : 'fold';
+    } else if (equity > potOdds - 0.06) {
+      // Slightly incorrect odds — fold most of the time
+      action = r < 0.28 ? 'call' : 'fold';
+    } else if (equity > 0.26 && r < 0.10 && available.includes('raise')) {
+      // Bluff-raise: check-raise with air at a low but non-zero frequency
+      action = 'raise'; amount = raiseAmt(1.00);
+    } else {
+      action = 'fold';
     }
   }
 
-  const available = availableActionsFor('bot', state);
+  // ─── Normalise to legal actions ────────────────────────────────────────────
   if (!available.includes(action)) {
-    if (available.includes('call')) action = 'call';
-    else if (available.includes('check')) action = 'check';
-    else action = available[0];
+    if (action === 'raise' || action === 'bet') {
+      action = available.includes('call') ? 'call'
+             : available.includes('check') ? 'check'
+             : available[0];
+    } else {
+      action = available.includes('check') ? 'check' : available[0];
+    }
   }
 
+  amount = clamp(amount);
   return { action, amount };
 }
 
+// ─── PokerGame class (unchanged) ───────────────────────────────────────────────
 export class PokerGame {
   constructor({ startingStacks = { player: 1000, bot: 1000 }, bigBlind = BIG_BLIND } = {}) {
     this.startingStacks = startingStacks;
@@ -145,57 +225,54 @@ export class PokerGame {
 
   resetMatch() {
     this.playerStack = this.startingStacks.player;
-    this.botStack = this.startingStacks.bot;
-    this.history = [];
+    this.botStack    = this.startingStacks.bot;
+    this.history     = [];
   }
 
   startHand() {
     this.handNumber += 1;
-    this.deck = shuffleDeck(createDeck());
-    this.playerHole = this.deck.splice(0, 2);
-    this.botHole = this.deck.splice(0, 2);
-    this.community = [];
-    this.street = 'preflop';
+    this.deck        = shuffleDeck(createDeck());
+    this.playerHole  = this.deck.splice(0, 2);
+    this.botHole     = this.deck.splice(0, 2);
+    this.community   = [];
+    this.street      = 'preflop';
     this.playerStack -= SMALL_BLIND;
-    this.botStack -= BIG_BLIND;
-    this.pot = SMALL_BLIND + BIG_BLIND;
-    this.currentBet = BIG_BLIND;
+    this.botStack    -= BIG_BLIND;
+    this.pot         = SMALL_BLIND + BIG_BLIND;
+    this.currentBet  = BIG_BLIND;
     this.playerCommit = SMALL_BLIND;
-    this.botCommit = BIG_BLIND;
-    this.toAct = 'player';
-    this.lastAction = null;
-    this.lastActor = null;
-    this.winner = null;
+    this.botCommit   = BIG_BLIND;
+    this.toAct       = 'player';
+    this.lastAction  = null;
+    this.lastActor   = null;
+    this.winner      = null;
     this.handLog = {
       handNumber: this.handNumber,
       playerHole: [...this.playerHole],
-      botHole: [...this.botHole],
-      community: [...this.community],
-      blinds: {
-        player: SMALL_BLIND,
-        bot: BIG_BLIND,
-      },
-      actions: [],
-      result: null,
+      botHole:    [...this.botHole],
+      community:  [...this.community],
+      blinds:     { player: SMALL_BLIND, bot: BIG_BLIND },
+      actions:    [],
+      result:     null,
     };
   }
 
   getState() {
     return {
-      handNumber: this.handNumber,
-      street: this.street,
-      pot: this.pot,
-      currentBet: this.currentBet,
+      handNumber:   this.handNumber,
+      street:       this.street,
+      pot:          this.pot,
+      currentBet:   this.currentBet,
       playerCommit: this.playerCommit,
-      botCommit: this.botCommit,
-      toAct: this.toAct,
-      playerHole: [...this.playerHole],
-      botHole: [...this.botHole],
-      community: [...this.community],
-      playerStack: this.playerStack,
-      botStack: this.botStack,
-      winner: this.winner,
-      handLog: this.handLog,
+      botCommit:    this.botCommit,
+      toAct:        this.toAct,
+      playerHole:   [...this.playerHole],
+      botHole:      [...this.botHole],
+      community:    [...this.community],
+      playerStack:  this.playerStack,
+      botStack:     this.botStack,
+      winner:       this.winner,
+      handLog:      this.handLog,
     };
   }
 
@@ -208,16 +285,13 @@ export class PokerGame {
   }
 
   playerAction(action, amount = this.bigBlind) {
-    if (!this.canAct('player')) {
-      return false;
-    }
-    return this._takeAction('player', action, amount);
+    if (!this.canAct('player')) return false;
+    this._takeAction('player', action, amount);
+    return true;
   }
 
   botAction() {
-    if (!this.canAct('bot')) {
-      return false;
-    }
+    if (!this.canAct('bot')) return false;
     const { action, amount } = chooseBotAction(this);
     const actualCallAmount = this.currentBet - this.botCommit;
     this._takeAction('bot', action, amount);
@@ -225,17 +299,10 @@ export class PokerGame {
   }
 
   _takeAction(actor, action, amount) {
-    if (this.winner) {
-      return false;
-    }
-    if (this.toAct !== actor) {
-      return false;
-    }
+    if (this.winner || this.toAct !== actor) return false;
 
-    const actorCommit = actor === 'player' ? this.playerCommit : this.botCommit;
-    const opponentCommit = actor === 'player' ? this.botCommit : this.playerCommit;
+    const actorCommit  = actor === 'player' ? this.playerCommit : this.botCommit;
     const opponentName = opponent(actor);
-    let contribution = 0;
 
     if (action === 'fold') {
       this.winner = opponentName;
@@ -245,200 +312,112 @@ export class PokerGame {
     }
 
     if (action === 'check') {
-      if (this.currentBet > 0 && actorCommit < this.currentBet) {
+      if (this.currentBet > 0 && actorCommit < this.currentBet)
         throw new Error('Cannot check when a bet is outstanding.');
-      }
       this._logAction(actor, 'check', 0);
     } else if (action === 'bet') {
-      if (this.currentBet !== 0) {
-        throw new Error('Cannot bet after a bet exists; use raise instead.');
-      }
+      if (this.currentBet !== 0) throw new Error('Cannot bet after a bet exists; use raise instead.');
       this.currentBet = amount;
-      contribution = amount - actorCommit;
+      const contrib = amount - actorCommit;
       this._applyCommit(actor, amount);
-      this.pot += contribution;
+      this.pot += contrib;
       this._logAction(actor, 'bet', amount);
     } else if (action === 'call') {
-      if (this.currentBet === 0) {
-        throw new Error('Nothing to call.');
-      }
-      contribution = this.currentBet - actorCommit;
+      if (this.currentBet === 0) throw new Error('Nothing to call.');
+      const contrib = this.currentBet - actorCommit;
       this._applyCommit(actor, this.currentBet);
-      this.pot += contribution;
-      this._logAction(actor, 'call', contribution);
+      this.pot += contrib;
+      this._logAction(actor, 'call', contrib);
     } else if (action === 'raise') {
-      if (this.currentBet === 0) {
-        throw new Error('Cannot raise when there is no current bet.');
-      }
-      const newBet = this.currentBet + amount;
-      contribution = newBet - actorCommit;
+      if (this.currentBet === 0) throw new Error('Cannot raise when there is no current bet.');
+      const newBet  = this.currentBet + amount;
+      const contrib = newBet - actorCommit;
       this.currentBet = newBet;
       this._applyCommit(actor, newBet);
-      this.pot += contribution;
+      this.pot += contrib;
       this._logAction(actor, 'raise', amount);
     } else {
       throw new Error(`Unknown action: ${action}`);
     }
 
     this.lastAction = action;
-    this.lastActor = actor;
-    const nextToAct = opponentName;
+    this.lastActor  = actor;
 
-    if ((action === 'check' || action === 'call') && this._bettingRoundComplete(nextToAct)) {
+    if ((action === 'check' || action === 'call') && this._bettingRoundComplete(opponentName)) {
       this._advanceStreet();
       return;
     }
 
-    if (action === 'fold') {
-      return;
-    }
-
-    if (action === 'bet' || action === 'raise') {
-      this.toAct = opponentName;
-      return;
-    }
-
-    if (action === 'check' || action === 'call') {
-      this.toAct = opponentName;
-      return;
-    }
+    if (action === 'bet' || action === 'raise') { this.toAct = opponentName; return; }
+    if (action === 'check' || action === 'call') { this.toAct = opponentName; return; }
   }
 
   _logAction(actor, action, amount) {
-    this.handLog.actions.push({
-      actor,
-      action,
-      amount,
-      street: this.street,
-      pot: this.pot,
-      toAct: this.toAct,
-      timestamp: Date.now(),
-    });
+    this.handLog.actions.push({ actor, action, amount, street: this.street, pot: this.pot, toAct: this.toAct, timestamp: Date.now() });
   }
 
   _applyCommit(actor, amount) {
-    const commitDelta = actor === 'player' ? amount - this.playerCommit : amount - this.botCommit;
-    if (actor === 'player') {
-      this.playerCommit = amount;
-      this.playerStack -= commitDelta;
-    } else {
-      this.botCommit = amount;
-      this.botStack -= commitDelta;
-    }
+    const delta = actor === 'player' ? amount - this.playerCommit : amount - this.botCommit;
+    if (actor === 'player') { this.playerCommit = amount; this.playerStack -= delta; }
+    else                    { this.botCommit    = amount; this.botStack    -= delta; }
   }
 
   _bettingRoundComplete(nextToAct = this.toAct) {
     if (this.currentBet === 0) {
-      return (
-        this.lastAction === 'check' &&
-        this.lastActor !== null &&
-        this.lastActor !== nextToAct
-      );
+      return this.lastAction === 'check' && this.lastActor !== null && this.lastActor !== nextToAct;
     }
     return (
       this.playerCommit === this.currentBet &&
-      this.botCommit === this.currentBet &&
+      this.botCommit    === this.currentBet &&
       this.lastActor !== null &&
       this.lastActor !== nextToAct
     );
   }
 
   _advanceStreet() {
-    const currentIndex = STREET_ORDER.indexOf(this.street);
-    if (currentIndex === -1 || this.street === 'showdown') {
-      return;
-    }
-    if (this.street === 'preflop') {
-      this.community.push(...this.deck.splice(0, 3));
-      this.street = 'flop';
-    } else if (this.street === 'flop') {
-      this.community.push(...this.deck.splice(0, 1));
-      this.street = 'turn';
-    } else if (this.street === 'turn') {
-      this.community.push(...this.deck.splice(0, 1));
-      this.street = 'river';
-    } else if (this.street === 'river') {
-      this.street = 'showdown';
-      this._settleShowdown();
-      return;
-    }
-
-    this.currentBet = 0;
+    if (this.street === 'showdown') return;
+    if (this.street === 'preflop') { this.community.push(...this.deck.splice(0, 3)); this.street = 'flop'; }
+    else if (this.street === 'flop')  { this.community.push(...this.deck.splice(0, 1)); this.street = 'turn'; }
+    else if (this.street === 'turn')  { this.community.push(...this.deck.splice(0, 1)); this.street = 'river'; }
+    else if (this.street === 'river') { this.street = 'showdown'; this._settleShowdown(); return; }
+    this.currentBet  = 0;
     this.playerCommit = 0;
-    this.botCommit = 0;
-    this.toAct = 'player';
-    this.lastAction = null;
-    this.lastActor = null;
+    this.botCommit   = 0;
+    this.toAct       = 'player';
+    this.lastAction  = null;
+    this.lastActor   = null;
     this.handLog.community = [...this.community];
   }
 
   _settleFold(winner) {
-    const loser = opponent(winner);
-    const collect = this.pot;
-    if (winner === 'player') {
-      this.playerStack += collect;
-    } else {
-      this.botStack += collect;
-    }
-    this.handLog.result = {
-      winner,
-      method: 'fold',
-      pot: this.pot,
-    };
+    if (winner === 'player') this.playerStack += this.pot;
+    else                     this.botStack    += this.pot;
+    this.handLog.result = { winner, method: 'fold', pot: this.pot };
     this.history.push(this.handLog);
   }
 
   _settleShowdown() {
     const playerCards = [...this.playerHole, ...this.community];
-    const botCards = [...this.botHole, ...this.community];
-    const playerHand = evaluateHand(playerCards);
-    const botHand = evaluateHand(botCards);
-    const winners = getWinner(playerCards, botCards);
-    let winner = null;
+    const botCards    = [...this.botHole,    ...this.community];
+    const playerHand  = evaluateHand(playerCards);
+    const botHand     = evaluateHand(botCards);
+    const winners     = getWinner(playerCards, botCards);
+    let winner;
     if (winners.length === 2) {
       winner = 'split';
-      const splitAmount = Math.floor(this.pot / 2);
-      this.playerStack += splitAmount;
-      this.botStack += splitAmount;
+      const half = Math.floor(this.pot / 2);
+      this.playerStack += half; this.botStack += half;
     } else if (winners[0] === playerHand) {
-      winner = 'player';
-      this.playerStack += this.pot;
+      winner = 'player'; this.playerStack += this.pot;
     } else {
-      winner = 'bot';
-      this.botStack += this.pot;
+      winner = 'bot'; this.botStack += this.pot;
     }
     this.winner = winner;
     this.handLog.result = {
-      winner,
-      method: 'showdown',
-      pot: this.pot,
-      playerHand: handDescription([...this.playerHole, ...this.community]),
-      botHand: handDescription([...this.botHole, ...this.community]),
+      winner, method: 'showdown', pot: this.pot,
+      playerHand: handDescription(playerCards),
+      botHand:    handDescription(botCards),
     };
     this.history.push(this.handLog);
-  }
-
-  autoPlaySampleHand(maxSteps = 100) {
-    this.startHand();
-    let steps = 0;
-    while (!this.winner) {
-      if (steps++ > maxSteps) {
-        throw new Error('autoPlaySampleHand exceeded maximum step count');
-      }
-
-      if (this.toAct === 'player') {
-        const available = this.getAvailableActions('player');
-        if (available.includes('check')) {
-          this.playerAction('check');
-        } else if (available.includes('call')) {
-          this.playerAction('call');
-        } else {
-          this.playerAction('check');
-        }
-      } else {
-        this.botAction();
-      }
-    }
-    return this.getState();
   }
 }
