@@ -8,7 +8,7 @@ const SUITS = {
   s: { symbol: '♠', color: '#222' },
 };
 
-// ─── Sound ───────────────────────────────────────────────────────────────────
+// ─── Sound ────────────────────────────────────────────────────────────────────
 let audioCtx = null;
 function getCtx() {
   if (!audioCtx) audioCtx = new (window.AudioContext || window['webkitAudioContext'])();
@@ -18,10 +18,8 @@ function getCtx() {
 function tone(ctx, freq, start, dur, vol = 0.28, type = 'sine') {
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
-  osc.connect(gain);
-  gain.connect(ctx.destination);
-  osc.type = type;
-  osc.frequency.value = freq;
+  osc.connect(gain); gain.connect(ctx.destination);
+  osc.type = type; osc.frequency.value = freq;
   gain.gain.setValueAtTime(vol, ctx.currentTime + start);
   gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + dur);
   osc.start(ctx.currentTime + start);
@@ -31,64 +29,76 @@ function playSound(type) {
   try {
     const ctx = getCtx();
     if (type === 'win') {
-      tone(ctx, 523, 0,    0.25);
-      tone(ctx, 659, 0.13, 0.25);
-      tone(ctx, 784, 0.26, 0.45);
-      tone(ctx, 1046,0.38, 0.5, 0.2);
+      tone(ctx, 523, 0, 0.25); tone(ctx, 659, 0.13, 0.25);
+      tone(ctx, 784, 0.26, 0.45); tone(ctx, 1046, 0.38, 0.5, 0.2);
     } else if (type === 'lose') {
-      tone(ctx, 392, 0,    0.3);
-      tone(ctx, 311, 0.18, 0.35);
+      tone(ctx, 392, 0, 0.3); tone(ctx, 311, 0.18, 0.35);
       tone(ctx, 220, 0.38, 0.55, 0.32);
     } else if (type === 'fold') {
-      tone(ctx, 220, 0,    0.08, 0.4, 'triangle');
+      tone(ctx, 220, 0, 0.08, 0.4, 'triangle');
       tone(ctx, 160, 0.06, 0.18, 0.25, 'triangle');
     }
   } catch (_) {}
 }
 
-// ─── Card component ───────────────────────────────────────────────────────────
+// ─── Card ─────────────────────────────────────────────────────────────────────
 function Card({ card, hidden, glowing, small }) {
   const isHidden = hidden || !card || card === '??';
   const suit = isHidden ? null : card[1];
   const rank = isHidden ? null : card[0];
   const suitInfo = SUITS[suit] || { symbol: suit, color: '#000' };
-  const w = small ? 54 : 64;
-  const h = small ? 76 : 90;
-
+  const w = small ? 54 : 64; const h = small ? 76 : 90;
   const style = {
-    width: w, height: h,
-    borderRadius: small ? 10 : 13,
+    width: w, height: h, borderRadius: small ? 10 : 13,
     border: '1px solid rgba(255,255,255,0.16)',
     background: isHidden ? 'linear-gradient(180deg,#18304e,#0f1d32)' : '#fbfbfb',
     boxShadow: glowing ? '0 0 14px rgba(255,209,71,0.65)' : '0 6px 16px rgba(0,0,0,0.28)',
     display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
-    padding: small ? 6 : 8,
-    opacity: card ? 1 : 0.35,
-    overflow: 'hidden', flexShrink: 0,
+    padding: small ? 6 : 8, opacity: card ? 1 : 0.35, overflow: 'hidden', flexShrink: 0,
   };
-  const backPattern = {
-    backgroundImage:
-      'radial-gradient(circle at 20% 20%,rgba(255,255,255,0.14) 0,rgba(255,255,255,0.02) 12%),radial-gradient(circle at 80% 80%,rgba(255,255,255,0.16) 0,rgba(255,255,255,0.04) 10%)',
-  };
-
+  const back = { backgroundImage: 'radial-gradient(circle at 20% 20%,rgba(255,255,255,0.14) 0,rgba(255,255,255,0.02) 12%),radial-gradient(circle at 80% 80%,rgba(255,255,255,0.16) 0,rgba(255,255,255,0.04) 10%)' };
   return (
-    <div style={isHidden ? { ...style, ...backPattern } : style}>
-      {isHidden ? (
-        <div style={{ width:'100%', height:'100%', display:'flex', alignItems:'center', justifyContent:'center', fontSize: small?20:26 }}>♠</div>
-      ) : (
-        <>
-          <span style={{ color: suitInfo.color, fontSize: small?13:16, fontWeight:700 }}>{rank}</span>
-          <span style={{ color: suitInfo.color, fontSize: small?24:30, textAlign:'center' }}>{suitInfo.symbol}</span>
-          <span style={{ color: suitInfo.color, fontSize: small?13:16, fontWeight:700, alignSelf:'flex-end' }}>{rank}</span>
-        </>
-      )}
+    <div style={isHidden ? { ...style, ...back } : style}>
+      {isHidden
+        ? <div style={{ width:'100%',height:'100%',display:'flex',alignItems:'center',justifyContent:'center',fontSize:small?20:26 }}>♠</div>
+        : <>
+            <span style={{ color:suitInfo.color, fontSize:small?13:16, fontWeight:700 }}>{rank}</span>
+            <span style={{ color:suitInfo.color, fontSize:small?24:30, textAlign:'center' }}>{suitInfo.symbol}</span>
+            <span style={{ color:suitInfo.color, fontSize:small?13:16, fontWeight:700, alignSelf:'flex-end' }}>{rank}</span>
+          </>
+      }
+    </div>
+  );
+}
+
+// ─── Bet chip badge ───────────────────────────────────────────────────────────
+function BetBadge({ amount }) {
+  const visible = amount > 0;
+  return (
+    <div style={{
+      display: 'flex', justifyContent: 'center', alignItems: 'center',
+      height: visible ? 38 : 0,
+      opacity: visible ? 1 : 0,
+      overflow: 'hidden',
+      transition: 'height 300ms ease, opacity 300ms ease',
+      marginTop: visible ? 6 : 0,
+    }}>
+      <div style={{
+        width: 44, height: 44, borderRadius: '50%',
+        background: 'radial-gradient(circle at 35% 35%, #f5c842, #c8880a)',
+        border: '2px solid #f0d060',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: amount >= 1000 ? 10 : amount >= 100 ? 11 : 13,
+        fontWeight: 800, color: '#1a0e00',
+      }}>{amount}</div>
     </div>
   );
 }
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
-  const engineRef    = useRef(new PokerGame());
+  const engineRef     = useRef(new PokerGame());
   const nextHandTimer = useRef(null);
   const botTimer      = useRef(null);
   const dealTimer     = useRef(null);
@@ -101,7 +111,8 @@ export default function App() {
   const [isDealing,     setIsDealing]     = useState(true);
   const [reducedMotion, setReducedMotion] = useState(false);
   const [raiseMode,     setRaiseMode]     = useState(false);
-  const [raiseAction,   setRaiseAction]   = useState('raise'); // 'bet' | 'raise'
+  const [raiseAction,   setRaiseAction]   = useState('raise');
+  const [buyIns,        setBuyIns]        = useState({ player: 0, bot: 0 });
 
   const BB = engineRef.current.bigBlind;
 
@@ -113,9 +124,8 @@ export default function App() {
 
   const startNewHand = (rebuy = false) => {
     if (nextHandTimer.current) { clearTimeout(nextHandTimer.current); nextHandTimer.current = null; }
-    engineRef.current[rebuy ? 'resetMatch' : 'startHand'] && (rebuy ? engineRef.current.resetMatch() : null);
     if (rebuy) { engineRef.current.resetMatch(); setMessage('Stacks reset — new hand.'); }
-    else { setMessage('Dealing…'); }
+    else setMessage('Dealing…');
     engineRef.current.startHand();
     setWagerAmount(BB);
     setIsDealing(true);
@@ -124,7 +134,6 @@ export default function App() {
     syncState();
   };
 
-  // init
   useEffect(() => {
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
     setReducedMotion(media.matches);
@@ -134,7 +143,6 @@ export default function App() {
     return () => media.removeEventListener('change', l);
   }, []);
 
-  // deal animation
   useEffect(() => {
     if (!gameState || !isDealing) return;
     if (dealStep >= 4) {
@@ -146,7 +154,6 @@ export default function App() {
     return () => clearTimeout(dealTimer.current);
   }, [dealStep, gameState, isDealing, reducedMotion]);
 
-  // bot turn
   useEffect(() => {
     if (!gameState || gameState.winner || isDealing || gameState.toAct !== 'bot') return;
     setBotThinking(true);
@@ -163,21 +170,29 @@ export default function App() {
     return () => clearTimeout(botTimer.current);
   }, [gameState?.toAct, gameState?.winner, isDealing, reducedMotion]);
 
-  // winner → sound + next hand
   useEffect(() => {
     if (!gameState?.winner) return;
     const result = engineRef.current.getState().handLog?.result;
     if (gameState.winner === 'player') playSound('win');
-    else if (result?.method === 'fold') playSound('fold'); // player folded
+    else if (result?.method === 'fold') playSound('fold');
     else playSound('lose');
 
+    // 3.5 s to see the result before next hand
     nextHandTimer.current = setTimeout(() => {
-      startNewHand(gameState.playerStack <= 0 || gameState.botStack <= 0);
-    }, reducedMotion ? 1200 : 2000);
+      const playerBust = (gameState.playerStack ?? 1) <= 0;
+      const botBust    = (gameState.botStack ?? 1) <= 0;
+      const rebuy      = playerBust || botBust;
+      if (rebuy) {
+        setBuyIns(prev => ({
+          player: prev.player + (playerBust ? 1 : 0),
+          bot:    prev.bot    + (botBust    ? 1 : 0),
+        }));
+      }
+      startNewHand(rebuy);
+    }, reducedMotion ? 1500 : 3500);
     return () => clearTimeout(nextHandTimer.current);
   }, [gameState?.winner, reducedMotion]);
 
-  // reset raise mode when turn changes
   useEffect(() => {
     const disabled = !(gameState?.toAct === 'player' && !botThinking && !isDealing && !gameState?.winner);
     if (disabled) setRaiseMode(false);
@@ -204,52 +219,56 @@ export default function App() {
     if (engineRef.current.winner) finishHand();
   };
 
-  if (!gameState) {
-    return <div style={{ height:'100%', display:'flex', alignItems:'center', justifyContent:'center', background:'#071116', color:'#c8d7ef', fontSize:16 }}>Loading…</div>;
-  }
+  if (!gameState) return (
+    <div style={{ height:'100%',display:'flex',alignItems:'center',justifyContent:'center',background:'#071116',color:'#c8d7ef',fontSize:16 }}>Loading…</div>
+  );
 
-  const callAmount    = Math.max(gameState.currentBet - gameState.playerCommit, 0);
-  const minWager      = Math.max(BB, callAmount || BB);
-  const maxWager      = Math.max(0, gameState.playerStack);
+  const callAmount     = Math.max(gameState.currentBet - gameState.playerCommit, 0);
+  const minWager       = Math.max(BB, callAmount || BB);
+  const maxWager       = Math.max(0, gameState.playerStack);
   const actionDisabled = !(gameState.toAct === 'player' && !botThinking && !isDealing && !gameState.winner);
-  const community     = [...gameState.community, null, null, null, null, null].slice(0, 5);
-  const hasBet        = gameState.availableActions.includes('bet');
-  const hasRaise      = gameState.availableActions.includes('raise');
+  const community      = [...gameState.community, null, null, null, null, null].slice(0, 5);
+  const hasBet         = gameState.availableActions.includes('bet');
+  const hasRaise       = gameState.availableActions.includes('raise');
+  // Only reveal bot cards at showdown, not on fold
+  const revealBot      = gameState.street === 'showdown' && !!gameState.winner;
 
   return (
     <div style={page}>
-      {/* ── Top bar ── */}
+      {/* Top bar */}
       <div style={topBar}>
         <span style={titleTxt}>Heads-Up Poker</span>
         <div style={metaRow}>
-          <span style={chip}>Hand {gameState.handNumber}</span>
-          <span style={chip}>{gameState.street}</span>
+          <span style={metaChip}>Hand {gameState.handNumber}</span>
+          <span style={metaChip}>{gameState.street}</span>
         </div>
       </div>
 
-      {/* ── Game area ── */}
+      {/* Game area */}
       <div style={gameArea}>
-        {/* Bot */}
-        <div style={panel(gameState.winner === 'bot')}>
+
+        {/* Bot panel */}
+        <div style={panelStyle(gameState.winner === 'bot')}>
           <div style={panelHead}>
             <span style={panelName}>Bot</span>
-            <span style={stackTxt}>{gameState.botStack} chips</span>
+            <div style={stackGroup}>
+              <span style={stackBig}>{gameState.botStack}</span>
+              {buyIns.bot > 0 && <span style={buyInBadge}>↩{buyIns.bot}</span>}
+            </div>
           </div>
           <div style={cardRow}>
             {gameState.botHole.map((c, i) => (
-              <Card key={i} card={c} hidden={!gameState.winner} glowing={gameState.winner === 'bot'} />
+              <Card key={i} card={c} hidden={!revealBot} glowing={gameState.winner === 'bot'} />
             ))}
           </div>
-          <div style={statusTxt}>
-            {gameState.toAct === 'bot' && !gameState.winner ? 'Thinking…' : 'Waiting'}
-          </div>
+          {/* Bot's bet chip — bottom of panel, facing board */}
+          <BetBadge amount={gameState.botCommit} />
         </div>
 
         {/* Board */}
         <div style={board}>
           <div style={potRow}>
-            <span style={pill}>Pot: {gameState.pot}</span>
-            {gameState.currentBet > 0 && <span style={pill}>Bet: {gameState.currentBet}</span>}
+            <span style={potPill}>Pot: {gameState.pot}</span>
           </div>
           <div style={communityRow}>
             {community.map((c, i) => (
@@ -261,41 +280,42 @@ export default function App() {
           <div style={msgTxt}>{message}</div>
         </div>
 
-        {/* Player */}
-        <div style={panel(gameState.winner === 'player')}>
-          <div style={panelHead}>
-            <span style={panelName}>You</span>
-            <span style={stackTxt}>{gameState.playerStack} chips</span>
-          </div>
+        {/* Player panel */}
+        <div style={panelStyle(gameState.winner === 'player')}>
+          {/* Player's bet chip — top of panel, facing board */}
+          <BetBadge amount={gameState.playerCommit} />
           <div style={cardRow}>
             {gameState.playerHole.map((c, i) => (
               <Card key={i} card={c} hidden={false} glowing={gameState.winner === 'player'} />
             ))}
           </div>
-          <div style={statusTxt}>Your cards are live.</div>
+          <div style={{ ...panelHead, marginTop: 8, marginBottom: 0 }}>
+            <span style={panelName}>You</span>
+            <div style={stackGroup}>
+              <span style={stackBig}>{gameState.playerStack}</span>
+              {buyIns.player > 0 && <span style={buyInBadge}>↩{buyIns.player}</span>}
+            </div>
+          </div>
         </div>
+
       </div>
 
-      {/* ── Action bar ── */}
+      {/* Action bar */}
       <div style={actionBar(actionDisabled)}>
         {raiseMode ? (
-          /* ── Raise mode ── */
           <>
             <div style={sliderRow}>
-              <input
-                type="range"
-                min={minWager} max={maxWager} value={wagerAmount}
+              <input type="range" min={minWager} max={maxWager} value={wagerAmount}
                 onChange={e => setWagerAmount(Math.max(minWager, Number(e.target.value) || minWager))}
-                style={slider}
-              />
+                style={sliderStyle} />
               <span style={wagerVal}>{wagerAmount}</span>
             </div>
             <div style={btnRow}>
-              <button style={btn('#334', false, 'auto')} onClick={() => setRaiseMode(false)}>← Back</button>
-              <button style={btn('#334', wagerAmount <= minWager, 36)}
+              <button style={btn('#2a3a4a', false, 'auto')} onClick={() => setRaiseMode(false)}>← Back</button>
+              <button style={btn('#2a3a4a', wagerAmount <= minWager, 36)}
                 onClick={() => setWagerAmount(a => Math.max(minWager, a - BB))}>−{BB}</button>
               <span style={raiseCtr}>{wagerAmount}</span>
-              <button style={btn('#334', wagerAmount >= maxWager, 36)}
+              <button style={btn('#2a3a4a', wagerAmount >= maxWager, 36)}
                 onClick={() => setWagerAmount(a => Math.min(maxWager, a + BB))}>+{BB}</button>
               <button style={btn('#3a8a5c', false, 'auto')}
                 onClick={() => handlePlayerAction(raiseAction, wagerAmount)}>
@@ -304,7 +324,6 @@ export default function App() {
             </div>
           </>
         ) : (
-          /* ── Normal mode ── */
           <div style={btnRow}>
             <button style={btn('#8a3a3a', actionDisabled)} disabled={actionDisabled}
               onClick={() => handlePlayerAction('fold')}>Fold</button>
@@ -330,9 +349,7 @@ const page = {
   height: '100%',
   background: 'linear-gradient(180deg,#071116 0%,#0c1f33 100%)',
   color: '#edf2ff',
-  display: 'flex',
-  flexDirection: 'column',
-  overflow: 'hidden',
+  display: 'flex', flexDirection: 'column', overflow: 'hidden',
 };
 
 const topBar = {
@@ -343,7 +360,7 @@ const topBar = {
 };
 const titleTxt = { fontSize: 17, fontWeight: 800, letterSpacing: '-0.03em' };
 const metaRow  = { display: 'flex', gap: 6 };
-const chip     = {
+const metaChip = {
   fontSize: 11, fontWeight: 600,
   background: 'rgba(255,255,255,0.08)', borderRadius: 999,
   padding: '3px 10px', color: '#9cb3d0',
@@ -353,11 +370,10 @@ const chip     = {
 const gameArea = {
   flex: 1, minHeight: 0,
   display: 'flex', flexDirection: 'column',
-  padding: '8px 12px', gap: 8,
-  overflow: 'hidden',
+  padding: '8px 12px', gap: 8, overflow: 'hidden',
 };
 
-const panel = (glow) => ({
+const panelStyle = (glow) => ({
   borderRadius: 18, padding: '10px 14px 8px',
   background: 'rgba(255,255,255,0.04)',
   border: glow ? '1px solid rgba(255,210,73,0.7)' : '1px solid rgba(255,255,255,0.08)',
@@ -365,10 +381,16 @@ const panel = (glow) => ({
   flexShrink: 0,
 });
 const panelHead = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 };
-const panelName = { fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#b0c3de' };
-const stackTxt  = { fontSize: 12, color: '#9ab1d2' };
-const statusTxt = { marginTop: 6, fontSize: 11, color: '#7a96b8', textAlign: 'center' };
-const cardRow   = { display: 'flex', gap: 10, justifyContent: 'center' };
+const panelName = { fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#8aa8cc' };
+const stackGroup = { display: 'flex', alignItems: 'center', gap: 6 };
+const stackBig   = { fontSize: 22, fontWeight: 800, color: '#f0e8cc', letterSpacing: '-0.02em' };
+const buyInBadge = {
+  fontSize: 10, fontWeight: 700,
+  background: 'rgba(255,100,100,0.18)', color: '#f08080',
+  borderRadius: 999, padding: '2px 7px',
+  border: '1px solid rgba(255,100,100,0.3)',
+};
+const cardRow = { display: 'flex', gap: 10, justifyContent: 'center' };
 
 const board = {
   flex: 1, minHeight: 0,
@@ -379,10 +401,14 @@ const board = {
   display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
   gap: 8,
 };
-const potRow     = { display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' };
-const pill       = { padding: '4px 12px', borderRadius: 999, background: 'rgba(255,255,255,0.07)', color: '#f5f8ff', fontSize: 12, fontWeight: 700 };
+const potRow = { display: 'flex', gap: 8, justifyContent: 'center' };
+const potPill = {
+  padding: '5px 16px', borderRadius: 999,
+  background: 'rgba(255,255,255,0.08)', color: '#f5f8ff',
+  fontSize: 14, fontWeight: 800,
+};
 const communityRow = { display: 'flex', gap: 6, justifyContent: 'center', flexWrap: 'nowrap' };
-const cardSlot   = (i, active, rm) => ({
+const cardSlot = (i, active, rm) => ({
   transform: active ? 'translateY(0)' : 'translateY(8px)',
   opacity: active ? 1 : 0.3,
   transition: rm ? 'none' : `transform 240ms ease ${i*55}ms, opacity 240ms ease ${i*55}ms`,
@@ -399,13 +425,11 @@ const actionBar = (disabled) => ({
   opacity: disabled ? 0.75 : 1,
   transition: 'opacity 200ms ease',
 });
-
-const sliderRow = { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 };
-const slider    = { flex: 1, accentColor: '#4dc9a7', height: 20 };
-const wagerVal  = { minWidth: 40, textAlign: 'center', fontSize: 13, fontWeight: 700, color: '#eef5ff', flexShrink: 0 };
-const raiseCtr  = { flex: 1, textAlign: 'center', fontSize: 15, fontWeight: 700, color: '#eef5ff' };
-
-const btnRow = { display: 'flex', gap: 8, alignItems: 'center' };
+const sliderRow  = { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 };
+const sliderStyle = { flex: 1, accentColor: '#4dc9a7', height: 20 };
+const wagerVal   = { minWidth: 40, textAlign: 'center', fontSize: 13, fontWeight: 700, color: '#eef5ff', flexShrink: 0 };
+const raiseCtr   = { flex: 1, textAlign: 'center', fontSize: 15, fontWeight: 700, color: '#eef5ff' };
+const btnRow     = { display: 'flex', gap: 8, alignItems: 'center' };
 
 const btn = (color, disabled, flex = 1) => ({
   flex,
