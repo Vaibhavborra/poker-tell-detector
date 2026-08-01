@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { PokerGame } from './game/engine';
+import CameraOverlay from './CameraOverlay';
 
 const SUITS = {
   h: { symbol: '♥', color: '#d42b2b' },
@@ -236,6 +237,7 @@ export default function App() {
 
   return (
     <div style={page}>
+      <CameraOverlay />
       {/* Top bar */}
       <div style={topBar}>
         <span style={titleTxt}>Heads-Up Poker</span>
