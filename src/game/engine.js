@@ -219,8 +219,9 @@ export class PokerGame {
       return false;
     }
     const { action, amount } = chooseBotAction(this);
+    const actualCallAmount = this.currentBet - this.botCommit;
     this._takeAction('bot', action, amount);
-    return { action, amount };
+    return { action, amount: action === 'call' ? actualCallAmount : amount };
   }
 
   _takeAction(actor, action, amount) {

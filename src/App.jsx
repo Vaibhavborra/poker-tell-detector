@@ -8,30 +8,29 @@ const SUITS = {
   s: { symbol: '♠', color: '#222' },
 };
 
-function Card({ card, hidden, glowing }) {
+function Card({ card, hidden, glowing, small }) {
   const isHidden = hidden || !card || card === '??';
   const suit = isHidden ? null : card[1];
   const rank = isHidden ? null : card[0];
   const suitInfo = SUITS[suit] || { symbol: suit, color: '#000' };
+  const w = small ? 54 : 64;
+  const h = small ? 76 : 90;
 
   const style = {
-    width: 74,
-    height: 104,
-    borderRadius: 16,
+    width: w,
+    height: h,
+    borderRadius: small ? 10 : 13,
     border: '1px solid rgba(255,255,255,0.16)',
-    background: isHidden
-      ? 'linear-gradient(180deg, #18304e 0%, #0f1d32 100%)'
-      : '#fbfbfb',
+    background: isHidden ? 'linear-gradient(180deg, #18304e 0%, #0f1d32 100%)' : '#fbfbfb',
     color: isHidden ? '#fff' : '#111',
-    boxShadow: glowing ? '0 0 18px rgba(255,209,71,0.65)' : '0 18px 40px rgba(0,0,0,0.22)',
+    boxShadow: glowing ? '0 0 14px rgba(255,209,71,0.65)' : '0 6px 16px rgba(0,0,0,0.28)',
     display: 'flex',
     flexDirection: 'column',
     justifyContent: 'space-between',
-    padding: 12,
-    transition: 'transform 180ms ease, box-shadow 180ms ease, opacity 180ms ease',
+    padding: small ? 6 : 8,
     opacity: card ? 1 : 0.35,
-    position: 'relative',
     overflow: 'hidden',
+    flexShrink: 0,
   };
 
   const backPattern = {
@@ -42,12 +41,12 @@ function Card({ card, hidden, glowing }) {
   return (
     <div style={isHidden ? { ...style, ...backPattern } : style}>
       {isHidden ? (
-        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28 }}>♠</div>
+        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: small ? 20 : 26 }}>♠</div>
       ) : (
         <>
-          <span style={{ color: suitInfo.color, fontSize: 18 }}>{rank}</span>
-          <span style={{ color: suitInfo.color, fontSize: 34 }}>{suitInfo.symbol}</span>
-          <span style={{ color: suitInfo.color, fontSize: 18, alignSelf: 'flex-end' }}>{rank}</span>
+          <span style={{ color: suitInfo.color, fontSize: small ? 13 : 16, fontWeight: 700 }}>{rank}</span>
+          <span style={{ color: suitInfo.color, fontSize: small ? 24 : 30, textAlign: 'center' }}>{suitInfo.symbol}</span>
+          <span style={{ color: suitInfo.color, fontSize: small ? 13 : 16, fontWeight: 700, alignSelf: 'flex-end' }}>{rank}</span>
         </>
       )}
     </div>
@@ -59,7 +58,6 @@ function App() {
   const nextHandTimer = useRef(null);
   const botTimer = useRef(null);
   const dealTimer = useRef(null);
-  const previousPot = useRef(0);
   const [gameState, setGameState] = useState(null);
   const [message, setMessage] = useState('Dealing new hand…');
   const [error, setError] = useState(null);
@@ -76,18 +74,13 @@ function App() {
   };
 
   const startNewHand = (rebuy = false) => {
-    if (nextHandTimer.current) {
-      window.clearTimeout(nextHandTimer.current);
-      nextHandTimer.current = null;
-    }
-
+    if (nextHandTimer.current) { window.clearTimeout(nextHandTimer.current); nextHandTimer.current = null; }
     if (rebuy) {
       engineRef.current.resetMatch();
-      setMessage('Stacks reset after a bust — dealing a fresh hand.');
+      setMessage('Stacks reset — new hand.');
     } else {
-      setMessage('Dealing a fresh hand…');
+      setMessage('Dealing…');
     }
-
     engineRef.current.startHand();
     setWagerAmount(engineRef.current.bigBlind);
     setIsDealing(true);
@@ -98,7 +91,7 @@ function App() {
   useEffect(() => {
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
     setReducedMotion(media.matches);
-    const listener = (event) => setReducedMotion(event.matches);
+    const listener = (e) => setReducedMotion(e.matches);
     media.addEventListener('change', listener);
     startNewHand();
     return () => media.removeEventListener('change', listener);
@@ -112,39 +105,29 @@ function App() {
       setMessage(gameState.toAct === 'player' ? 'Your turn.' : 'Bot is thinking…');
       return;
     }
-
-    dealTimer.current = window.setTimeout(() => setDealStep((step) => step + 1), delay);
-    return () => {
-      if (dealTimer.current) window.clearTimeout(dealTimer.current);
-    };
+    dealTimer.current = window.setTimeout(() => setDealStep((s) => s + 1), delay);
+    return () => { if (dealTimer.current) window.clearTimeout(dealTimer.current); };
   }, [dealStep, gameState, isDealing, reducedMotion]);
-
-  useEffect(() => {
-    if (!gameState) return;
-    if (previousPot.current !== gameState.pot) {
-      previousPot.current = gameState.pot;
-    }
-  }, [gameState?.pot]);
 
   useEffect(() => {
     if (!gameState || gameState.winner || isDealing) return;
     if (gameState.toAct !== 'bot') return;
-
     setBotThinking(true);
     setMessage('Bot is thinking…');
-
     botTimer.current = window.setTimeout(() => {
       const botDecision = engineRef.current.botAction();
       if (botDecision) {
-        setMessage(`Bot ${botDecision.action}${botDecision.amount ? ` ${botDecision.amount}` : ''}.`);
+        const { action, amount } = botDecision;
+        if (action === 'fold' || action === 'check') {
+          setMessage(`Bot ${action}.`);
+        } else {
+          setMessage(`Bot ${action} ${amount}.`);
+        }
       }
       setBotThinking(false);
       syncState();
     }, reducedMotion ? 800 : 1600);
-
-    return () => {
-      if (botTimer.current) window.clearTimeout(botTimer.current);
-    };
+    return () => { if (botTimer.current) window.clearTimeout(botTimer.current); };
   }, [gameState?.toAct, gameState?.winner, isDealing, reducedMotion]);
 
   useEffect(() => {
@@ -152,10 +135,8 @@ function App() {
     nextHandTimer.current = window.setTimeout(() => {
       const rebuy = gameState.playerStack <= 0 || gameState.botStack <= 0;
       startNewHand(rebuy);
-    }, reducedMotion ? 1200 : 1800);
-    return () => {
-      if (nextHandTimer.current) window.clearTimeout(nextHandTimer.current);
-    };
+    }, reducedMotion ? 1200 : 2000);
+    return () => { if (nextHandTimer.current) window.clearTimeout(nextHandTimer.current); };
   }, [gameState?.winner, reducedMotion]);
 
   const finishHand = () => {
@@ -163,156 +144,130 @@ function App() {
     const result = state.handLog?.result;
     const { playerStack, botStack } = state;
     if (!result) return;
-
-    let resultMessage = '';
+    let msg = '';
     if (result.method === 'fold') {
-      resultMessage = `${result.winner === 'player' ? 'You win' : 'Bot wins'} by fold.`;
+      msg = `${result.winner === 'player' ? 'You win' : 'Bot wins'} by fold.`;
     } else {
-      const winnerText =
-        result.winner === 'player' ? 'You win' : result.winner === 'bot' ? 'Bot wins' : 'Split pot';
-      const handName = result.playerHand?.name ?? 'the showdown';
-      resultMessage = `${winnerText} with ${handName}.`;
+      const winnerText = result.winner === 'player' ? 'You win' : result.winner === 'bot' ? 'Bot wins' : 'Split pot';
+      msg = `${winnerText} — ${result.playerHand?.name ?? 'showdown'}.`;
     }
-
-    if (playerStack <= 0 || botStack <= 0) {
-      resultMessage += ' A stack busted, rebuy incoming.';
-    }
-    setMessage(resultMessage);
+    if (playerStack <= 0 || botStack <= 0) msg += ' Rebuy incoming.';
+    setMessage(msg);
   };
 
   const handlePlayerAction = (action, amount = wagerAmount) => {
     const isPlayerTurn = gameState?.toAct === 'player' && !botThinking && !isDealing && !gameState?.winner;
     if (!isPlayerTurn) return;
-
     const success = engineRef.current.playerAction(action, amount);
     if (success === false) return;
-
-    setMessage(`You ${action}${amount ? ` ${amount}` : ''}.`);
-    syncState();
-
-    if (engineRef.current.winner) {
-      finishHand();
+    if (action === 'fold' || action === 'check') {
+      setMessage(`You ${action}.`);
+    } else {
+      setMessage(`You ${action} ${amount}.`);
     }
+    syncState();
+    if (engineRef.current.winner) finishHand();
   };
 
-  if (error) {
-    return <div style={errorScreenStyle}>Error: {error}</div>;
-  }
-
-  if (!gameState) {
-    return <div style={loadingStyle}>Loading poker table…</div>;
-  }
+  if (error) return <div style={errorScreenStyle}>Error: {error}</div>;
+  if (!gameState) return <div style={loadingStyle}>Loading…</div>;
 
   const callAmount = Math.max(gameState.currentBet - gameState.playerCommit, 0);
   const minWager = Math.max(engineRef.current.bigBlind, callAmount || engineRef.current.bigBlind);
   const maxWager = Math.max(0, gameState.playerStack);
   const actionDisabled = !(gameState.toAct === 'player' && !botThinking && !isDealing && !gameState.winner);
-  const botCards = gameState.winner ? gameState.botHole : ['??', '??'];
-  const displayedCommunity = [...gameState.community, null, null, null, null].slice(0, 5);
+  const displayedCommunity = [...gameState.community, null, null, null, null, null].slice(0, 5);
 
   return (
     <div style={pageStyle}>
-      <div style={tableShellStyle}>
-        <div style={topBarStyle}>
-          <div>
-            <div style={titleStyle}>Heads-Up Poker</div>
-            <div style={subtitleStyle}>A fast mobile-first poker table with realistic turn flow.</div>
-          </div>
-          <div style={metaStyle}>
-            <div style={metaLabel}>Hand</div>
-            <div style={metaValue}>{gameState.handNumber}</div>
-            <div style={metaLabel}>Street</div>
-            <div style={metaValue}>{gameState.street}</div>
-          </div>
-        </div>
-
-        <div style={areaStyle}>
-          <div style={opponentPanelStyle(gameState.winner === 'bot')}>
-            <div style={panelTextStyle}>Bot</div>
-            <div style={cardRowStyle}>
-              {gameState.botHole.map((card, index) => (
-                <Card key={`bot-${index}`} card={card} hidden={!gameState.winner} glowing={gameState.winner === 'bot'} />
-              ))}
-            </div>
-            <div style={infoRowStyle}>Stack: {gameState.botStack}</div>
-            <div style={infoRowStyle}>{gameState.toAct === 'bot' && !gameState.winner ? 'Bot is thinking…' : 'Waiting'}</div>
-          </div>
-
-          <div style={boardAreaStyle}>
-            <div style={boardTopStyle}>
-              <div style={pillStyle}>Pot: {gameState.pot}</div>
-              <div style={pillStyle}>Current bet: {gameState.currentBet}</div>
-            </div>
-            <div style={boardStyle}>
-              {displayedCommunity.map((card, index) => (
-                <div key={index} style={boardCardContainerStyle(index, !!card, reducedMotion)}>
-                  <Card card={card || '??'} hidden={!card} glowing={false} />
-                </div>
-              ))}
-            </div>
-            <div style={tableTextStyle}>{message}</div>
-          </div>
-
-          <div style={playerPanelStyle(gameState.winner === 'player')}>
-            <div style={panelTextStyle}>You</div>
-            <div style={cardRowStyle}>
-              {gameState.playerHole.map((card, index) => (
-                <Card key={`player-${index}`} card={card} hidden={false} glowing={gameState.winner === 'player'} />
-              ))}
-            </div>
-            <div style={infoRowStyle}>Stack: {gameState.playerStack}</div>
-            <div style={infoRowStyle}>Your cards are live.</div>
-          </div>
+      {/* Top bar */}
+      <div style={topBarStyle}>
+        <div style={titleStyle}>Heads-Up Poker</div>
+        <div style={metaRowStyle}>
+          <span style={metaChipStyle}>Hand {gameState.handNumber}</span>
+          <span style={metaChipStyle}>{gameState.street}</span>
         </div>
       </div>
 
-      <div style={actionPanelStyle(actionDisabled)}>
-        <div style={actionHeaderStyle(actionDisabled)}>
-          <div style={{ fontWeight: 700 }}>{actionDisabled ? 'Waiting for bot' : 'Your turn'}</div>
-          <div style={{ color: '#b0c3de' }}>{gameState.winner ? 'Hand complete' : actionDisabled ? 'Actions disabled' : 'Choose an action'}</div>
-        </div>
-
-        <div style={wagerRowStyle}>
-          <div style={wagerLabelStyle}>Raise amount</div>
-          <div style={wagerControlStyle}>
-            <input
-              type="range"
-              min={minWager}
-              max={maxWager}
-              value={wagerAmount}
-              disabled={actionDisabled}
-              onChange={(event) => setWagerAmount(Math.max(minWager, Number(event.target.value) || minWager))}
-              style={sliderStyle(actionDisabled)}
-            />
-            <div style={wagerValueStyle}>{wagerAmount}</div>
+      {/* Game area */}
+      <div style={gameAreaStyle}>
+        {/* Bot panel */}
+        <div style={playerPanelStyle(gameState.winner === 'bot')}>
+          <div style={panelHeaderStyle}>
+            <span style={panelNameStyle}>Bot</span>
+            <span style={stackStyle}>{gameState.botStack} chips</span>
           </div>
-          <button
-            style={miniButtonStyle(actionDisabled)}
-            onClick={() => setWagerAmount(Math.min(maxWager, Math.max(minWager, wagerAmount + engineRef.current.bigBlind)))}
-            disabled={actionDisabled}
-          >
-            +{engineRef.current.bigBlind}
-          </button>
+          <div style={cardRowStyle}>
+            {gameState.botHole.map((card, i) => (
+              <Card key={i} card={card} hidden={!gameState.winner} glowing={gameState.winner === 'bot'} />
+            ))}
+          </div>
+          <div style={panelStatusStyle}>
+            {gameState.toAct === 'bot' && !gameState.winner ? 'Thinking…' : 'Waiting'}
+          </div>
         </div>
 
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          <button style={actionButtonStyle(actionDisabled)} disabled={actionDisabled} onClick={() => handlePlayerAction('fold')}>
+        {/* Board */}
+        <div style={boardAreaStyle}>
+          <div style={potRowStyle}>
+            <span style={pillStyle}>Pot: {gameState.pot}</span>
+            {gameState.currentBet > 0 && <span style={pillStyle}>Bet: {gameState.currentBet}</span>}
+          </div>
+          <div style={communityRowStyle}>
+            {displayedCommunity.map((card, i) => (
+              <div key={i} style={boardCardContainerStyle(i, !!card, reducedMotion)}>
+                <Card card={card || '??'} hidden={!card} glowing={false} small />
+              </div>
+            ))}
+          </div>
+          <div style={messageStyle}>{message}</div>
+        </div>
+
+        {/* Player panel */}
+        <div style={playerPanelStyle(gameState.winner === 'player')}>
+          <div style={panelHeaderStyle}>
+            <span style={panelNameStyle}>You</span>
+            <span style={stackStyle}>{gameState.playerStack} chips</span>
+          </div>
+          <div style={cardRowStyle}>
+            {gameState.playerHole.map((card, i) => (
+              <Card key={i} card={card} hidden={false} glowing={gameState.winner === 'player'} />
+            ))}
+          </div>
+          <div style={panelStatusStyle}>Your cards are live.</div>
+        </div>
+      </div>
+
+      {/* Action bar */}
+      <div style={actionBarStyle(actionDisabled)}>
+        <div style={sliderRowStyle}>
+          <span style={sliderLabelStyle}>Raise</span>
+          <input
+            type="range"
+            min={minWager}
+            max={maxWager}
+            value={wagerAmount}
+            disabled={actionDisabled}
+            onChange={(e) => setWagerAmount(Math.max(minWager, Number(e.target.value) || minWager))}
+            style={sliderStyle(actionDisabled)}
+          />
+          <span style={wagerValueStyle}>{wagerAmount}</span>
+        </div>
+        <div style={buttonRowStyle}>
+          <button style={btnStyle('#b84040', actionDisabled)} disabled={actionDisabled} onClick={() => handlePlayerAction('fold')}>
             Fold
           </button>
-          <button
-            style={actionButtonStyle(actionDisabled)}
-            disabled={actionDisabled}
-            onClick={() => handlePlayerAction(callAmount === 0 ? 'check' : 'call', callAmount === 0 ? undefined : callAmount)}
-          >
+          <button style={btnStyle('#2c6e8a', actionDisabled)} disabled={actionDisabled}
+            onClick={() => handlePlayerAction(callAmount === 0 ? 'check' : 'call', callAmount === 0 ? undefined : callAmount)}>
             {callAmount === 0 ? 'Check' : `Call ${callAmount}`}
           </button>
           {gameState.availableActions.includes('bet') && (
-            <button style={actionButtonStyle(actionDisabled)} disabled={actionDisabled} onClick={() => handlePlayerAction('bet', wagerAmount)}>
+            <button style={btnStyle('#3a8a5c', actionDisabled)} disabled={actionDisabled} onClick={() => handlePlayerAction('bet', wagerAmount)}>
               Bet {wagerAmount}
             </button>
           )}
           {gameState.availableActions.includes('raise') && (
-            <button style={actionButtonStyle(actionDisabled)} disabled={actionDisabled} onClick={() => handlePlayerAction('raise', wagerAmount)}>
+            <button style={btnStyle('#3a8a5c', actionDisabled)} disabled={actionDisabled} onClick={() => handlePlayerAction('raise', wagerAmount)}>
               Raise {wagerAmount}
             </button>
           )}
@@ -323,246 +278,218 @@ function App() {
 }
 
 const pageStyle = {
-  minHeight: '100vh',
-  background: 'radial-gradient(circle at top, rgba(108, 74, 34, 0.22), transparent 28%), linear-gradient(180deg, #071116 0%, #08131d 18%, #0c1f33 100%)',
+  height: '100dvh',
+  background: 'linear-gradient(180deg, #071116 0%, #0c1f33 100%)',
   color: '#edf2ff',
-  padding: '16px 12px 92px',
-  boxSizing: 'border-box',
-};
-
-const tableShellStyle = {
-  maxWidth: 980,
-  margin: '0 auto',
-  borderRadius: 32,
-  background: '#09121f',
-  border: '1px solid rgba(255,255,255,0.08)',
-  boxShadow: '0 28px 80px rgba(0,0,0,0.32)',
+  display: 'flex',
+  flexDirection: 'column',
   overflow: 'hidden',
+  boxSizing: 'border-box',
 };
 
 const topBarStyle = {
   display: 'flex',
   justifyContent: 'space-between',
-  gap: 18,
-  alignItems: 'flex-end',
-  padding: '24px 24px 6px',
+  alignItems: 'center',
+  padding: '10px 16px 8px',
+  borderBottom: '1px solid rgba(255,255,255,0.07)',
+  flexShrink: 0,
 };
 
 const titleStyle = {
-  fontSize: 28,
-  fontWeight: 800,
-  letterSpacing: '-0.04em',
-  marginBottom: 6,
-};
-
-const subtitleStyle = {
-  color: '#9cb3d0',
-  fontSize: 14,
-  lineHeight: 1.5,
-};
-
-const metaStyle = {
-  display: 'grid',
-  gap: 8,
-  textAlign: 'right',
-};
-
-const metaLabel = {
-  color: '#7f97b6',
-  fontSize: 12,
-  textTransform: 'uppercase',
-  letterSpacing: '0.2em',
-};
-
-const metaValue = {
   fontSize: 18,
-  fontWeight: 700,
+  fontWeight: 800,
+  letterSpacing: '-0.03em',
 };
 
-const areaStyle = {
-  display: 'grid',
-  gap: 22,
-  padding: '0 24px 24px',
+const metaRowStyle = {
+  display: 'flex',
+  gap: 6,
 };
 
-const opponentPanelStyle = (glow) => ({
-  borderRadius: 28,
-  padding: '18px 18px 14px',
-  background: 'rgba(255,255,255,0.04)',
-  border: glow ? '1px solid rgba(255, 210, 73, 0.62)' : '1px solid rgba(255,255,255,0.08)',
-  boxShadow: glow ? '0 0 20px rgba(255, 210, 73, 0.22)' : 'inset 0 0 0 1px rgba(255,255,255,0.03)',
-});
+const metaChipStyle = {
+  fontSize: 11,
+  fontWeight: 600,
+  background: 'rgba(255,255,255,0.08)',
+  borderRadius: 999,
+  padding: '3px 10px',
+  color: '#9cb3d0',
+  textTransform: 'uppercase',
+  letterSpacing: '0.06em',
+};
+
+const gameAreaStyle = {
+  flex: 1,
+  display: 'flex',
+  flexDirection: 'column',
+  padding: '8px 12px',
+  gap: 8,
+  overflow: 'hidden',
+};
 
 const playerPanelStyle = (glow) => ({
-  borderRadius: 28,
-  padding: '18px 18px 14px',
-  background: 'rgba(255,255,255,0.05)',
-  border: glow ? '1px solid rgba(255, 210, 73, 0.62)' : '1px solid rgba(255,255,255,0.08)',
-  boxShadow: glow ? '0 0 20px rgba(255, 210, 73, 0.22)' : 'inset 0 0 0 1px rgba(255,255,255,0.03)',
+  borderRadius: 18,
+  padding: '10px 14px 8px',
+  background: 'rgba(255,255,255,0.04)',
+  border: glow ? '1px solid rgba(255, 210, 73, 0.7)' : '1px solid rgba(255,255,255,0.08)',
+  boxShadow: glow ? '0 0 18px rgba(255, 210, 73, 0.2)' : 'none',
+  flexShrink: 0,
 });
 
-const panelTextStyle = {
-  fontSize: 14,
-  letterSpacing: '0.08em',
+const panelHeaderStyle = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  marginBottom: 8,
+};
+
+const panelNameStyle = {
+  fontSize: 12,
+  fontWeight: 700,
   textTransform: 'uppercase',
+  letterSpacing: '0.1em',
   color: '#b0c3de',
-  marginBottom: 14,
+};
+
+const stackStyle = {
+  fontSize: 12,
+  color: '#9ab1d2',
+};
+
+const panelStatusStyle = {
+  marginTop: 6,
+  fontSize: 11,
+  color: '#7a96b8',
+  textAlign: 'center',
 };
 
 const cardRowStyle = {
   display: 'flex',
-  gap: 12,
+  gap: 10,
   justifyContent: 'center',
-};
-
-const infoRowStyle = {
-  marginTop: 16,
-  fontSize: 13,
-  color: '#9ab1d2',
-  textAlign: 'center',
 };
 
 const boardAreaStyle = {
-  borderRadius: 34,
-  background: 'radial-gradient(circle at center, rgba(80, 121, 84, 0.18), rgba(9, 17, 30, 0.92) 54%)',
-  border: '1px solid rgba(255,255,255,0.09)',
-  padding: '26px 18px 22px',
-  boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.03)',
+  flex: 1,
+  borderRadius: 18,
+  background: 'radial-gradient(circle at center, rgba(80, 121, 84, 0.15), rgba(9, 17, 30, 0.9) 60%)',
+  border: '1px solid rgba(255,255,255,0.08)',
+  padding: '10px 12px 8px',
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 8,
 };
 
-const boardTopStyle = {
+const potRowStyle = {
   display: 'flex',
+  gap: 8,
   justifyContent: 'center',
-  gap: 12,
-  marginBottom: 20,
   flexWrap: 'wrap',
 };
 
 const pillStyle = {
-  padding: '10px 14px',
+  padding: '4px 12px',
   borderRadius: 999,
-  background: 'rgba(255,255,255,0.06)',
+  background: 'rgba(255,255,255,0.07)',
   color: '#f5f8ff',
-  fontSize: 13,
+  fontSize: 12,
   fontWeight: 700,
 };
 
-const boardStyle = {
+const communityRowStyle = {
   display: 'flex',
+  gap: 6,
   justifyContent: 'center',
-  gap: 12,
-  flexWrap: 'wrap',
+  flexWrap: 'nowrap',
 };
 
 const boardCardContainerStyle = (index, active, reducedMotion) => ({
-  transform: active ? 'translateY(0)' : 'translateY(12px)',
-  transition: reducedMotion ? 'none' : `transform 260ms ease ${index * 60}ms, opacity 260ms ease ${index * 60}ms`,
-  opacity: active ? 1 : 0.36,
+  transform: active ? 'translateY(0)' : 'translateY(10px)',
+  transition: reducedMotion ? 'none' : `transform 240ms ease ${index * 55}ms, opacity 240ms ease ${index * 55}ms`,
+  opacity: active ? 1 : 0.3,
 });
 
-const tableTextStyle = {
-  marginTop: 18,
-  textAlign: 'center',
-  color: '#dce8ff',
-  fontSize: 15,
-  lineHeight: 1.6,
-};
-
-const actionPanelStyle = (disabled) => ({
-  position: 'fixed',
-  left: 0,
-  right: 0,
-  bottom: 0,
-  zIndex: 10,
-  padding: '16px 14px 22px',
-  background: disabled ? 'rgba(4, 9, 18, 0.95)' : 'rgba(8, 17, 35, 0.98)',
-  boxShadow: '0 -20px 40px rgba(0,0,0,0.42)',
-  backdropFilter: 'blur(14px)',
-  borderTop: '1px solid rgba(255,255,255,0.08)',
-  opacity: disabled ? 0.84 : 1,
-  transition: 'opacity 220ms ease, background 220ms ease',
-});
-
-const actionHeaderStyle = (disabled) => ({
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  gap: 16,
-  marginBottom: 14,
-  color: disabled ? '#8295b5' : '#f6fcff',
-});
-
-const wagerRowStyle = {
-  display: 'grid',
-  gap: 10,
-  marginBottom: 16,
-};
-
-const wagerLabelStyle = {
+const messageStyle = {
   fontSize: 13,
-  color: '#8aa1c7',
-  letterSpacing: '0.12em',
-  textTransform: 'uppercase',
+  color: '#dce8ff',
+  textAlign: 'center',
+  lineHeight: 1.4,
 };
 
-const wagerControlStyle = {
+const actionBarStyle = (disabled) => ({
+  flexShrink: 0,
+  padding: '10px 12px 28px',
+  borderTop: '1px solid rgba(255,255,255,0.08)',
+  background: disabled ? 'rgba(4, 9, 18, 0.96)' : 'rgba(8, 17, 35, 0.98)',
+  backdropFilter: 'blur(14px)',
+  opacity: disabled ? 0.8 : 1,
+  transition: 'opacity 200ms ease',
+});
+
+const sliderRowStyle = {
   display: 'flex',
   alignItems: 'center',
-  gap: 10,
+  gap: 8,
+  marginBottom: 10,
+};
+
+const sliderLabelStyle = {
+  fontSize: 11,
+  color: '#7a96b8',
+  textTransform: 'uppercase',
+  letterSpacing: '0.1em',
+  flexShrink: 0,
 };
 
 const sliderStyle = (disabled) => ({
   flex: 1,
   accentColor: '#4dc9a7',
-  opacity: disabled ? 0.5 : 1,
+  opacity: disabled ? 0.4 : 1,
   cursor: disabled ? 'not-allowed' : 'pointer',
+  height: 20,
 });
 
 const wagerValueStyle = {
-  minWidth: 64,
+  minWidth: 40,
   textAlign: 'center',
-  background: 'rgba(255,255,255,0.06)',
-  borderRadius: 12,
-  padding: '10px 12px',
-  color: '#eef5ff',
+  fontSize: 13,
   fontWeight: 700,
+  color: '#eef5ff',
+  flexShrink: 0,
 };
 
-const miniButtonStyle = (disabled) => ({
-  borderRadius: 14,
-  border: '1px solid rgba(255,255,255,0.12)',
-  background: disabled ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.08)',
-  color: disabled ? '#7a8da7' : '#f4f8ff',
-  padding: '10px 14px',
-  cursor: disabled ? 'not-allowed' : 'pointer',
-  transition: 'background 180ms ease',
-});
+const buttonRowStyle = {
+  display: 'flex',
+  gap: 8,
+};
 
-const actionButtonStyle = (disabled) => ({
-  borderRadius: 18,
-  padding: '14px 20px',
+const btnStyle = (color, disabled) => ({
+  flex: 1,
+  padding: '12px 4px',
+  borderRadius: 14,
   border: 'none',
-  background: disabled ? 'rgba(255,255,255,0.08)' : '#4dc9a7',
-  color: disabled ? '#7c92af' : '#081419',
+  background: disabled ? 'rgba(255,255,255,0.07)' : color,
+  color: disabled ? '#5a7094' : '#fff',
   fontWeight: 700,
-  flex: '1 1 120px',
-  minWidth: 120,
+  fontSize: 14,
   cursor: disabled ? 'not-allowed' : 'pointer',
-  transition: 'transform 160ms ease, background 160ms ease',
+  transition: 'background 160ms ease',
 });
 
 const loadingStyle = {
-  minHeight: '100vh',
+  height: '100dvh',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  fontSize: 18,
+  fontSize: 16,
   color: '#c8d7ef',
   background: '#071018',
 };
 
 const errorScreenStyle = {
-  minHeight: '100vh',
+  height: '100dvh',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
