@@ -3,41 +3,37 @@ import { createDeck, shuffleDeck } from './deck';
 import { evaluateHand, getWinner } from './evaluate';
 
 const SMALL_BLIND = 10;
-const BIG_BLIND = 20;
-const RANK_VALUES = { '2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'T':10,'J':11,'Q':12,'K':13,'A':14 };
+const BIG_BLIND   = 20;
 const ALL_RANKS   = ['2','3','4','5','6','7','8','9','T','J','Q','K','A'];
 const ALL_SUITS   = ['h','d','c','s'];
 
-// Full 52-card deck reference (built once)
 const FULL_DECK = [];
 for (const r of ALL_RANKS) for (const s of ALL_SUITS) FULL_DECK.push(r + s);
 
 function opponent(player) { return player === 'player' ? 'bot' : 'player'; }
-
 function handDescription(cards) {
-  const hand = evaluateHand(cards);
-  return { name: hand.name, rank: hand.rank };
+  const h = evaluateHand(cards);
+  return { name: h.name, rank: h.rank };
 }
 
+// ─── Available actions ────────────────────────────────────────────────────────
 function availableActionsFor(actor, state) {
-  const actorCommit = actor === 'player' ? state.playerCommit : state.botCommit;
+  const commit = actor === 'player' ? state.playerCommit : state.botCommit;
   if (state.winner) return [];
-  if (state.currentBet === 0) return ['check', 'bet'];
-  if (actorCommit < state.currentBet) return ['fold', 'call', 'raise'];
-  return ['check', 'raise'];
+  if (state.currentBet === 0)        return ['check', 'bet'];
+  if (commit < state.currentBet)     return ['fold', 'call', 'raise'];
+  return ['check', 'raise']; // commit === currentBet: BB option or limped
 }
 
 // ─── Monte Carlo equity estimator ─────────────────────────────────────────────
-// Estimates bot win probability by simulating random opponent hands
 function estimateEquity(botHole, community, simCount = 200) {
-  const known = new Set([...botHole, ...community]);
+  const known     = new Set([...botHole, ...community]);
   const remaining = FULL_DECK.filter(c => !known.has(c));
   const commNeeded = 5 - community.length;
   const arr = [...remaining];
   let wins = 0, ties = 0;
 
   for (let i = 0; i < simCount; i++) {
-    // Partial Fisher-Yates: shuffle only the cards we need
     const need = 2 + commNeeded;
     for (let j = 0; j < need; j++) {
       const r = j + Math.floor(Math.random() * (arr.length - j));
@@ -56,156 +52,105 @@ function estimateEquity(botHole, community, simCount = 200) {
 
 // ─── Board texture ─────────────────────────────────────────────────────────────
 function boardTexture(community) {
-  if (!community.length) return { wet: false, dry: true, paired: false, monotone: false };
+  if (!community.length) return { wet: false, dry: true, paired: false };
   const suits = community.map(c => c[1]);
-  const ranks = community.map(c => RANK_VALUES[c[0]]).sort((a, b) => a - b);
-  const sc = {}; suits.forEach(s => sc[s] = (sc[s] || 0) + 1);
-  const rc = {}; community.forEach(c => rc[c[0]] = (rc[c[0]] || 0) + 1);
-  const maxSuit = Math.max(...Object.values(sc));
-  const paired  = Object.values(rc).some(v => v >= 2);
-  const monotone = maxSuit >= 3;
+  const ranks = community.map(c => ({ '2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'T':10,'J':11,'Q':12,'K':13,'A':14 }[c[0]])).sort((a,b)=>a-b);
+  const sc = {}; suits.forEach(s => sc[s] = (sc[s]||0)+1);
+  const rc = {}; community.forEach(c => rc[c[0]] = (rc[c[0]]||0)+1);
+  const maxSuit   = Math.max(...Object.values(sc));
+  const paired    = Object.values(rc).some(v => v >= 2);
   const flushDraw = maxSuit >= 2;
   let straightDraw = false;
   for (let i = 0; i < ranks.length - 1; i++) {
-    if (ranks[ranks.length - 1] - ranks[i] <= 4) { straightDraw = true; break; }
+    if (ranks[ranks.length-1] - ranks[i] <= 4) { straightDraw = true; break; }
   }
   const wet = flushDraw || straightDraw;
-  return { wet, dry: !wet && !paired, paired, monotone, flushDraw, straightDraw };
+  return { wet, dry: !wet && !paired, paired, flushDraw, straightDraw };
 }
 
 // ─── Bot decision engine ───────────────────────────────────────────────────────
-//
-// Philosophy:
-//   • Equity-driven: every decision starts from Monte Carlo win probability
-//   • Pot-odds aware: never call mathematically incorrect
-//   • GTO-inspired mixing: randomises between actions so the bot is unexploitable
-//   • Bluffs with correct frequency (polarised on river, semi-bluff with draws)
-//   • Variable bet sizing: small (33%), medium (55%), large (80%), overbet (120%)
-//   • Trapping: occasionally slow-plays monsters
-//   • Bluff-raises: check-raise bluffs with air at correct frequency
-//
 function chooseBotAction(state) {
   const { botHole, community, pot, currentBet, botCommit, botStack, street } = state;
-  const available   = availableActionsFor('bot', state);
-  const hasBet      = currentBet > 0;
-  const callCost    = Math.max(0, currentBet - botCommit);
-  // Pot odds: fraction of the final pot we must invest to continue
-  const potOdds     = hasBet ? callCost / (pot + callCost) : 0;
-  const texture     = boardTexture(community);
-  const isRiver     = street === 'river';
-  const isPreflop   = street === 'preflop';
-  const r           = Math.random(); // single random value for this decision
+  const available  = availableActionsFor('bot', state);
+  const callCost   = Math.max(0, currentBet - botCommit);
+  // "Free play": bot's commit already equals the bet (BB option, or checked around)
+  const isFreePlay = currentBet > 0 && callCost === 0;
+  const hasBet     = currentBet > 0 && !isFreePlay;
+  const potOdds    = hasBet ? callCost / (pot + callCost) : 0;
+  const texture    = boardTexture(community);
+  const isRiver    = street === 'river';
+  const isPreflop  = street === 'preflop';
+  const r          = Math.random();
+  const equity     = estimateEquity(botHole, community, isPreflop ? 150 : 250);
 
-  // Equity from simulation (fewer sims preflop — faster, preflop is already solved enough)
-  const equity = estimateEquity(botHole, community, isPreflop ? 150 : 250);
-
-  // ─── Bet sizing helpers ────────────────────────────────────────────────────
-  // For 'bet': amount IS the total bet size
-  // For 'raise': amount is ADDED to currentBet by the engine
-  const clamp  = v => Math.max(BIG_BLIND, Math.min(v, botStack));
-  const betAmt = frac  => clamp(Math.round(pot * frac));
-  // Raise: we want the new total bet = currentBet + raiseAmt
-  // Express as fraction of pot (the extra on top of current bet)
-  const raiseAmt = frac => clamp(Math.round(pot * frac));
+  const clamp    = v  => Math.max(BIG_BLIND, Math.min(v, botStack));
+  const betAmt   = fr => clamp(Math.round(pot * fr));
+  const raiseAmt = fr => clamp(Math.round(pot * fr));
 
   let action = 'check';
   let amount = BIG_BLIND;
 
-  // ══════════════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════
   //  PREFLOP
-  // ══════════════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════
   if (isPreflop) {
     if (!hasBet) {
-      // We can check or bet (BB option, or SB limped)
-      if (equity > 0.66)                   { action = 'bet';   amount = betAmt(2.5); }
-      else if (equity > 0.55)              { action = r < 0.65 ? 'bet'  : 'check'; amount = betAmt(2.0); }
-      else if (equity > 0.46)              { action = r < 0.40 ? 'bet'  : 'check'; amount = betAmt(1.5); }
-      else if (r < 0.15)                   { action = 'bet';   amount = betAmt(1.5); } // bluff
-      else                                 { action = 'check'; }
+      // No bet outstanding — check or initiate
+      // (covers: bot is BB and player folded/called, or bot is SB and can act first)
+      if (equity > 0.65)             { action='bet';   amount=betAmt(2.5); }
+      else if (equity > 0.54)        { action=r<0.65?'bet':'check'; amount=betAmt(2.0); }
+      else if (equity > 0.45)        { action=r<0.42?'bet':'check'; amount=betAmt(1.5); }
+      else if (r < 0.18)             { action='bet';   amount=betAmt(1.5); } // bluff
+      else                           { action='check'; }
     } else {
-      // Facing a raise preflop
-      if (equity > 0.66)                   { action = r < 0.45 ? 'raise' : 'call'; amount = raiseAmt(2.5); }
-      else if (equity > potOdds + 0.10)    { action = 'call'; }
-      else if (equity > potOdds + 0.03)    { action = r < 0.78 ? 'call' : 'fold'; }
-      else if (r < 0.10)                   { action = 'raise'; amount = raiseAmt(2.0); } // 3-bet bluff
-      else                                  { action = 'fold'; }
+      // Facing a raise we must call or fold
+      if (equity > 0.65)             { action=r<0.44?'raise':'call'; amount=raiseAmt(2.5); }
+      else if (equity > potOdds+0.10){ action='call'; }
+      else if (equity > potOdds+0.03){ action=r<0.78?'call':'fold'; }
+      else if (r < 0.10)             { action='raise'; amount=raiseAmt(2.0); } // 3-bet bluff
+      else                           { action='fold'; }
     }
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
-  //  POSTFLOP  (flop / turn / river)
-  // ══════════════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════
+  //  POSTFLOP
+  // ══════════════════════════════════════════════════════════
   else if (!hasBet) {
-    // ── No bet facing — check or bet ──────────────────────────────────────
-    if (equity > 0.74) {
-      // Monster: mostly bet for value, occasionally trap (check-raise opportunity)
-      action = r < 0.78 ? 'bet' : 'check';
-      amount = betAmt(texture.wet ? 0.85 : 0.70);
-    } else if (equity > 0.62) {
-      // Strong: bet for value most of the time
-      action = r < 0.68 ? 'bet' : 'check';
-      amount = betAmt(0.60);
-    } else if (equity > 0.52) {
-      // Medium: thin value — bet about half the time
-      action = r < 0.45 ? 'bet' : 'check';
-      amount = betAmt(0.45);
-    } else if (equity > 0.38) {
-      // Drawing / marginal: semi-bluff — bet some of the time, check others
-      // Semi-bluffs work best on the flop/turn; on river there are no more draws
-      const semiBetFreq = isRiver ? 0.12 : 0.32;
-      action = r < semiBetFreq ? 'bet' : 'check';
-      amount = betAmt(0.55);
-    } else {
-      // Air: pure bluff with solver-appropriate frequency
-      // GTO bluff frequency ≈ bet_size / (bet_size + pot)
-      // e.g. 50% pot bet → bluff 33% of the time
-      const bluffFreq = isRiver
-        ? 0.28               // River: polarised, fewer bluffs overall
-        : texture.dry        // Flop/turn: more bluffs on dry boards (opponent has less)
-          ? 0.22
-          : 0.18;
-      action = r < bluffFreq ? 'bet' : 'check';
+    // Check or bet (no outstanding bet OR free play / BB option)
+    if (equity > 0.74)      { action=r<0.78?'bet':'check'; amount=betAmt(texture.wet?0.85:0.70); }
+    else if (equity > 0.62) { action=r<0.68?'bet':'check'; amount=betAmt(0.60); }
+    else if (equity > 0.52) { action=r<0.45?'bet':'check'; amount=betAmt(0.45); }
+    else if (equity > 0.38) { action=r<(isRiver?0.12:0.32)?'bet':'check'; amount=betAmt(0.55); }
+    else {
+      const bluffFreq = isRiver ? 0.28 : texture.dry ? 0.22 : 0.18;
+      action = r<bluffFreq?'bet':'check';
       amount = betAmt(isRiver ? 0.80 : 0.55);
     }
   } else {
-    // ── Facing a bet — fold / call / raise ────────────────────────────────
-    if (equity > potOdds + 0.22) {
-      // Dominating: raise for value or call to keep opponent in
-      if (r < 0.42 && available.includes('raise')) {
-        action = 'raise';
-        amount = raiseAmt(isRiver ? 1.10 : 0.90); // overbet river for value
-      } else {
-        action = 'call';
-      }
-    } else if (equity > potOdds + 0.09) {
-      // Comfortable call, occasional raise as semi-bluff / value
-      if (r < 0.18 && available.includes('raise') && !isRiver) {
-        action = 'raise'; amount = raiseAmt(0.70);
-      } else {
-        action = 'call';
-      }
-    } else if (equity > potOdds + 0.01) {
-      // Getting marginal odds — mostly call, sometimes fold
-      action = r < 0.72 ? 'call' : 'fold';
-    } else if (equity > potOdds - 0.06) {
-      // Slightly incorrect odds — fold most of the time
-      action = r < 0.28 ? 'call' : 'fold';
-    } else if (equity > 0.26 && r < 0.10 && available.includes('raise')) {
-      // Bluff-raise: check-raise with air at a low but non-zero frequency
-      action = 'raise'; amount = raiseAmt(1.00);
-    } else {
-      action = 'fold';
-    }
+    // Facing a bet that costs us chips
+    if (equity > potOdds+0.22)      { action=r<0.42&&available.includes('raise')?'raise':'call'; amount=raiseAmt(isRiver?1.10:0.90); }
+    else if (equity > potOdds+0.09) { action=r<0.18&&available.includes('raise')&&!isRiver?'raise':'call'; amount=raiseAmt(0.70); }
+    else if (equity > potOdds+0.01) { action=r<0.72?'call':'fold'; }
+    else if (equity > potOdds-0.06) { action=r<0.28?'call':'fold'; }
+    else if (equity > 0.26&&r<0.10&&available.includes('raise')) { action='raise'; amount=raiseAmt(1.00); }
+    else                             { action='fold'; }
   }
 
-  // ─── Normalise to legal actions ────────────────────────────────────────────
+  // ─── Normalise to available actions ──────────────────────
   if (!available.includes(action)) {
-    if (action === 'raise' || action === 'bet') {
-      action = available.includes('call') ? 'call'
+    if (action === 'bet') {
+      // bet→raise works in BB-option scenario; otherwise check
+      action = available.includes('raise') ? 'raise'
+             : available.includes('check')  ? 'check'
+             : available[0];
+    } else if (action === 'raise') {
+      action = available.includes('call')  ? 'call'
              : available.includes('check') ? 'check'
              : available[0];
-    } else {
+    } else if (action === 'call') {
       action = available.includes('check') ? 'check' : available[0];
+    } else {
+      action = available[0];
     }
   }
 
@@ -213,13 +158,16 @@ function chooseBotAction(state) {
   return { action, amount };
 }
 
-// ─── PokerGame class (unchanged) ───────────────────────────────────────────────
+// ─── PokerGame ────────────────────────────────────────────────────────────────
 export class PokerGame {
   constructor({ startingStacks = { player: 1000, bot: 1000 }, bigBlind = BIG_BLIND } = {}) {
     this.startingStacks = startingStacks;
-    this.bigBlind = bigBlind;
-    this.handNumber = 0;
-    this.history = [];
+    this.bigBlind       = bigBlind;
+    this.handNumber     = 0;
+    this.history        = [];
+    // dealerSeat: 0 = player is button/SB, 1 = bot is button/SB
+    // starts at 1 so first hand player is BB (bot acts first) — alternates every hand
+    this.dealerSeat     = 1;
     this.resetMatch();
   }
 
@@ -230,36 +178,56 @@ export class PokerGame {
   }
 
   startHand() {
-    this.handNumber += 1;
-    this.deck        = shuffleDeck(createDeck());
-    this.playerHole  = this.deck.splice(0, 2);
-    this.botHole     = this.deck.splice(0, 2);
-    this.community   = [];
-    this.street      = 'preflop';
-    this.playerStack -= SMALL_BLIND;
-    this.botStack    -= BIG_BLIND;
-    this.pot         = SMALL_BLIND + BIG_BLIND;
-    this.currentBet  = BIG_BLIND;
-    this.playerCommit = SMALL_BLIND;
-    this.botCommit   = BIG_BLIND;
-    this.toAct       = 'player';
-    this.lastAction  = null;
-    this.lastActor   = null;
-    this.winner      = null;
+    this.handNumber   += 1;
+    this.dealerSeat    = this.dealerSeat === 0 ? 1 : 0; // alternate each hand
+    this.actedThisStreet = new Set();
+
+    this.deck         = shuffleDeck(createDeck());
+    this.playerHole   = this.deck.splice(0, 2);
+    this.botHole      = this.deck.splice(0, 2);
+    this.community    = [];
+    this.street       = 'preflop';
+    this.currentBet   = BIG_BLIND;
+    this.winner       = null;
+    this.lastAction   = null;
+    this.lastActor    = null;
+
+    if (this.dealerSeat === 0) {
+      // Player is button (SB), bot is BB
+      // Preflop: player (SB) acts first
+      this.playerStack -= SMALL_BLIND;
+      this.botStack    -= BIG_BLIND;
+      this.playerCommit = SMALL_BLIND;
+      this.botCommit    = BIG_BLIND;
+      this.toAct        = 'player';
+    } else {
+      // Bot is button (SB), player is BB
+      // Preflop: bot (SB) acts first
+      this.botStack    -= SMALL_BLIND;
+      this.playerStack -= BIG_BLIND;
+      this.botCommit    = SMALL_BLIND;
+      this.playerCommit = BIG_BLIND;
+      this.toAct        = 'bot';
+    }
+
+    this.pot = SMALL_BLIND + BIG_BLIND;
+
     this.handLog = {
-      handNumber: this.handNumber,
-      playerHole: [...this.playerHole],
-      botHole:    [...this.botHole],
-      community:  [...this.community],
-      blinds:     { player: SMALL_BLIND, bot: BIG_BLIND },
-      actions:    [],
-      result:     null,
+      handNumber:  this.handNumber,
+      dealerSeat:  this.dealerSeat,
+      playerHole:  [...this.playerHole],
+      botHole:     [...this.botHole],
+      community:   [],
+      blinds:      { sb: this.dealerSeat === 0 ? 'player' : 'bot' },
+      actions:     [],
+      result:      null,
     };
   }
 
   getState() {
     return {
       handNumber:   this.handNumber,
+      dealerSeat:   this.dealerSeat,   // 0=player is BTN/SB, 1=bot is BTN/SB
       street:       this.street,
       pot:          this.pot,
       currentBet:   this.currentBet,
@@ -276,13 +244,8 @@ export class PokerGame {
     };
   }
 
-  getAvailableActions(actor = this.toAct) {
-    return availableActionsFor(actor, this);
-  }
-
-  canAct(actor) {
-    return !this.winner && this.toAct === actor;
-  }
+  getAvailableActions(actor = this.toAct) { return availableActionsFor(actor, this); }
+  canAct(actor) { return !this.winner && this.toAct === actor; }
 
   playerAction(action, amount = this.bigBlind) {
     if (!this.canAct('player')) return false;
@@ -293,9 +256,9 @@ export class PokerGame {
   botAction() {
     if (!this.canAct('bot')) return false;
     const { action, amount } = chooseBotAction(this);
-    const actualCallAmount = this.currentBet - this.botCommit;
+    const actualCallAmount   = this.currentBet - this.botCommit;
     this._takeAction('bot', action, amount);
-    return { action, amount: action === 'call' ? actualCallAmount : amount };
+    return { action, amount: action === 'call' ? Math.max(0, actualCallAmount) : amount };
   }
 
   _takeAction(actor, action, amount) {
@@ -303,6 +266,9 @@ export class PokerGame {
 
     const actorCommit  = actor === 'player' ? this.playerCommit : this.botCommit;
     const opponentName = opponent(actor);
+
+    // Record that this actor has acted this street
+    this.actedThisStreet.add(actor);
 
     if (action === 'fold') {
       this.winner = opponentName;
@@ -316,11 +282,10 @@ export class PokerGame {
         throw new Error('Cannot check when a bet is outstanding.');
       this._logAction(actor, 'check', 0);
     } else if (action === 'bet') {
-      if (this.currentBet !== 0) throw new Error('Cannot bet after a bet exists; use raise instead.');
+      if (this.currentBet !== 0) throw new Error('Cannot bet; use raise.');
       this.currentBet = amount;
-      const contrib = amount - actorCommit;
       this._applyCommit(actor, amount);
-      this.pot += contrib;
+      this.pot += amount - actorCommit;
       this._logAction(actor, 'bet', amount);
     } else if (action === 'call') {
       if (this.currentBet === 0) throw new Error('Nothing to call.');
@@ -329,7 +294,7 @@ export class PokerGame {
       this.pot += contrib;
       this._logAction(actor, 'call', contrib);
     } else if (action === 'raise') {
-      if (this.currentBet === 0) throw new Error('Cannot raise when there is no current bet.');
+      if (this.currentBet === 0) throw new Error('No bet to raise.');
       const newBet  = this.currentBet + amount;
       const contrib = newBet - actorCommit;
       this.currentBet = newBet;
@@ -343,49 +308,65 @@ export class PokerGame {
     this.lastAction = action;
     this.lastActor  = actor;
 
-    if ((action === 'check' || action === 'call') && this._bettingRoundComplete(opponentName)) {
+    if ((action === 'check' || action === 'call') && this._bettingRoundComplete()) {
       this._advanceStreet();
       return;
     }
 
-    if (action === 'bet' || action === 'raise') { this.toAct = opponentName; return; }
-    if (action === 'check' || action === 'call') { this.toAct = opponentName; return; }
+    if (action !== 'check' && action !== 'call') {
+      // bet or raise: other player must respond
+      this.toAct = opponentName;
+    } else {
+      // check or call but round not complete: other player acts
+      this.toAct = opponentName;
+    }
   }
 
   _logAction(actor, action, amount) {
-    this.handLog.actions.push({ actor, action, amount, street: this.street, pot: this.pot, toAct: this.toAct, timestamp: Date.now() });
+    this.handLog.actions.push({ actor, action, amount, street: this.street, pot: this.pot, timestamp: Date.now() });
   }
 
-  _applyCommit(actor, amount) {
-    const delta = actor === 'player' ? amount - this.playerCommit : amount - this.botCommit;
-    if (actor === 'player') { this.playerCommit = amount; this.playerStack -= delta; }
-    else                    { this.botCommit    = amount; this.botStack    -= delta; }
+  _applyCommit(actor, totalCommit) {
+    const delta = actor === 'player'
+      ? totalCommit - this.playerCommit
+      : totalCommit - this.botCommit;
+    if (actor === 'player') { this.playerCommit = totalCommit; this.playerStack -= delta; }
+    else                    { this.botCommit    = totalCommit; this.botStack    -= delta; }
   }
 
-  _bettingRoundComplete(nextToAct = this.toAct) {
+  // ─── Betting round complete only when BOTH players have acted ─────────────
+  _bettingRoundComplete() {
+    // Both must have voluntarily acted this street
+    if (!this.actedThisStreet.has('player') || !this.actedThisStreet.has('bot')) return false;
+
     if (this.currentBet === 0) {
-      return this.lastAction === 'check' && this.lastActor !== null && this.lastActor !== nextToAct;
+      // Both checked (last action was a check after both acted)
+      return this.lastAction === 'check';
     }
-    return (
-      this.playerCommit === this.currentBet &&
-      this.botCommit    === this.currentBet &&
-      this.lastActor !== null &&
-      this.lastActor !== nextToAct
-    );
+    // Bets equalised
+    return this.playerCommit === this.currentBet && this.botCommit === this.currentBet;
   }
 
   _advanceStreet() {
     if (this.street === 'showdown') return;
-    if (this.street === 'preflop') { this.community.push(...this.deck.splice(0, 3)); this.street = 'flop'; }
-    else if (this.street === 'flop')  { this.community.push(...this.deck.splice(0, 1)); this.street = 'turn'; }
-    else if (this.street === 'turn')  { this.community.push(...this.deck.splice(0, 1)); this.street = 'river'; }
-    else if (this.street === 'river') { this.street = 'showdown'; this._settleShowdown(); return; }
-    this.currentBet  = 0;
+
+    if (this.street === 'preflop')      { this.community.push(...this.deck.splice(0, 3)); this.street = 'flop';  }
+    else if (this.street === 'flop')    { this.community.push(...this.deck.splice(0, 1)); this.street = 'turn';  }
+    else if (this.street === 'turn')    { this.community.push(...this.deck.splice(0, 1)); this.street = 'river'; }
+    else if (this.street === 'river')   { this.street = 'showdown'; this._settleShowdown(); return; }
+
+    this.currentBet   = 0;
     this.playerCommit = 0;
-    this.botCommit   = 0;
-    this.toAct       = 'player';
-    this.lastAction  = null;
-    this.lastActor   = null;
+    this.botCommit    = 0;
+    this.lastAction   = null;
+    this.lastActor    = null;
+    this.actedThisStreet = new Set();
+
+    // Out-of-position player acts first postflop (non-button)
+    // dealerSeat 0 = player is button → bot is OOP → bot acts first postflop
+    // dealerSeat 1 = bot is button   → player is OOP → player acts first postflop
+    this.toAct = this.dealerSeat === 0 ? 'bot' : 'player';
+
     this.handLog.community = [...this.community];
   }
 
@@ -397,17 +378,16 @@ export class PokerGame {
   }
 
   _settleShowdown() {
-    const playerCards = [...this.playerHole, ...this.community];
-    const botCards    = [...this.botHole,    ...this.community];
-    const playerHand  = evaluateHand(playerCards);
-    const botHand     = evaluateHand(botCards);
-    const winners     = getWinner(playerCards, botCards);
+    const pCards  = [...this.playerHole, ...this.community];
+    const bCards  = [...this.botHole,    ...this.community];
+    const pHand   = evaluateHand(pCards);
+    const winners = getWinner(pCards, bCards);
     let winner;
     if (winners.length === 2) {
       winner = 'split';
       const half = Math.floor(this.pot / 2);
       this.playerStack += half; this.botStack += half;
-    } else if (winners[0] === playerHand) {
+    } else if (winners[0] === pHand) {
       winner = 'player'; this.playerStack += this.pot;
     } else {
       winner = 'bot'; this.botStack += this.pot;
@@ -415,8 +395,8 @@ export class PokerGame {
     this.winner = winner;
     this.handLog.result = {
       winner, method: 'showdown', pot: this.pot,
-      playerHand: handDescription(playerCards),
-      botHand:    handDescription(botCards),
+      playerHand: handDescription(pCards),
+      botHand:    handDescription(bCards),
     };
     this.history.push(this.handLog);
   }

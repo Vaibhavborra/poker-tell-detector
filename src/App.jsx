@@ -253,7 +253,10 @@ export default function App() {
         {/* Bot panel */}
         <div style={panelStyle(gameState.winner === 'bot')}>
           <div style={panelHead}>
-            <span style={panelName}>Bot</span>
+            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+              <span style={panelName}>Bot</span>
+              <span style={posTag}>{gameState.dealerSeat === 1 ? 'BTN' : 'BB'}</span>
+            </div>
             <div style={stackGroup}>
               <span style={stackBig}>{gameState.botStack}</span>
               {buyIns.bot > 0 && <span style={buyInBadge}>↩{buyIns.bot}</span>}
@@ -303,7 +306,10 @@ export default function App() {
             ))}
           </div>
           <div style={{ ...panelHead, marginTop: 8, marginBottom: 0 }}>
-            <span style={panelName}>You</span>
+            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+              <span style={panelName}>You</span>
+              <span style={posTag}>{gameState.dealerSeat === 0 ? 'BTN' : 'BB'}</span>
+            </div>
             <div style={stackGroup}>
               <span style={stackBig}>{gameState.playerStack}</span>
               {buyIns.player > 0 && <span style={buyInBadge}>↩{buyIns.player}</span>}
@@ -384,6 +390,14 @@ const gameArea = {
   flex: 1, minHeight: 0,
   display: 'flex', flexDirection: 'column',
   padding: '8px 12px', gap: 8, overflow: 'hidden',
+};
+
+const posTag = {
+  fontSize: 9, fontWeight: 800, letterSpacing: '0.08em',
+  background: 'rgba(255,210,73,0.18)', color: '#f5c842',
+  border: '1px solid rgba(255,210,73,0.35)',
+  borderRadius: 4, padding: '1px 5px',
+  textTransform: 'uppercase',
 };
 
 const panelStyle = (glow) => ({
