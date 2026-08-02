@@ -76,12 +76,12 @@ export default function CameraOverlay() {
   const dragRef      = useRef(null);
   const lastVideoTs  = useRef(-1);
 
-  const cornerRef   = useRef(3);
+  const cornerRef   = useRef(0);
   const expandedRef = useRef(false);
   const posRef      = useRef(null);
   const sizeRef     = useRef(SMALL);
 
-  const [corner,   setCorner]   = useState(3);
+  const [corner,   setCorner]   = useState(0);
   const [expanded, setExpanded] = useState(false);
   const [pos,      setPos]      = useState(null);
   const [dragging, setDragging] = useState(false);

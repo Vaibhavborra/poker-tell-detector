@@ -165,19 +165,40 @@ export default function TellsPanel() {
               {tab === 'stats' && report && (
                 <div style={{ paddingTop:4 }}>
                   <div style={{ fontSize:10, fontWeight:800, color:'#2a4a6a', letterSpacing:'0.12em', textTransform:'uppercase', marginBottom:8 }}>Action Breakdown</div>
-                  <StatRow label="Total resolved actions" value={report.totalSamples} />
+                  <StatRow label="Resolved hands (actions)" value={report.totalSamples} />
                   <StatRow label="Bets / Raises" value={report.bettingSamples} />
                   <StatRow label="Checks / Calls" value={report.passiveSamples} />
                   <StatRow label="Folds" value={report.foldSamples} />
 
-                  <div style={{ fontSize:10, fontWeight:800, color:'#2a4a6a', letterSpacing:'0.12em', textTransform:'uppercase', margin:'14px 0 8px' }}>Bet Outcomes</div>
-                  <StatRow label="Value bets (won)" value={report.valueSamples} />
-                  <StatRow label="Bluffs (lost)" value={report.bluffSamples} />
-                  {report.bettingSamples > 0 && (
+                  <div style={{ fontSize:10, fontWeight:800, color:'#2a4a6a', letterSpacing:'0.12em', textTransform:'uppercase', margin:'14px 0 8px' }}>Bet Sizing</div>
+                  {report.avgBetRatio !== null ? (
+                    <>
+                      <StatRow
+                        label="Avg bet size"
+                        value={`${Math.round(report.avgBetRatio * 100)}% of pot`}
+                        sub={report.avgBetRatio > 0.8 ? '— large/polarized' : report.avgBetRatio < 0.35 ? '— small/value' : '— medium'}
+                      />
+                      <StatRow label="Large bets (>70% pot)" value={report.overbetCount} sub="polarized sizing" />
+                      <StatRow label="Small bets (<35% pot)" value={report.smallBetCount} sub="value/blocking sizing" />
+                      {report.totalBets > 0 && (
+                        <StatRow
+                          label="Overbet frequency"
+                          value={`${Math.round((report.overbetCount / report.totalBets) * 100)}%`}
+                          sub="of all bets/raises"
+                        />
+                      )}
+                    </>
+                  ) : (
+                    <div style={{ color:'#3a5a7a', fontSize:11, paddingTop:4 }}>No bets recorded yet</div>
+                  )}
+
+                  <div style={{ fontSize:10, fontWeight:800, color:'#2a4a6a', letterSpacing:'0.12em', textTransform:'uppercase', margin:'14px 0 8px' }}>Hand Outcomes (bets only)</div>
+                  <StatRow label="Bets on winning hands" value={report.valueSamples} />
+                  <StatRow label="Bets on losing hands" value={report.lostBetSamples} />
+                  {(report.valueSamples + report.lostBetSamples) >= 5 && (
                     <StatRow
-                      label="Bluff frequency"
-                      value={`${Math.round((report.bluffSamples / report.bettingSamples) * 100)}%`}
-                      sub="of your bets/raises"
+                      label="Win rate when betting"
+                      value={`${Math.round((report.valueSamples / (report.valueSamples + report.lostBetSamples)) * 100)}%`}
                     />
                   )}
 

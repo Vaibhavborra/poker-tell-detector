@@ -233,7 +233,7 @@ export default function App() {
     if (!(gameState?.toAct === 'player' && !botThinking && !isDealing && !gameState?.winner)) return;
     const success = engineRef.current.playerAction(action, amount);
     if (success === false) return;
-    tellDetector.recordAction(action);
+    tellDetector.recordAction(action, amount, gameState.pot);
     setMessage(action === 'fold' || action === 'check' ? `You ${action}.` : `You ${action} ${amount}.`);
     setRaiseMode(false);
     syncState();

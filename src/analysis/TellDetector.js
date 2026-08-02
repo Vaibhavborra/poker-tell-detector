@@ -117,8 +117,8 @@ class TellDetector {
   }
 
   // ── Action recording ───────────────────────────────────────────────────────
-  // Call this every time the player acts
-  recordAction(action) {
+  // amount = chip amount (for bet/raise), pot = pot size before the action
+  recordAction(action, amount = 0, pot = 0) {
     const t = Date.now();
     const recent = this.frames.filter(f => t - f.t < 3000);
     if (recent.length < 3) return;
@@ -128,11 +128,25 @@ class TellDetector {
     const blinksRecent = this.blinkEvents.filter(e => t - e < 30000).length;
     const blinkRate = blinksRecent * 2;
 
+    // Bet sizing classification (0–1 scale: 0=tiny, 1=overbet)
+    // pot=0 on check/fold/call — sizing is irrelevant for those
+    const betRatio = (action === 'bet' || action === 'raise') && pot > 0
+      ? Math.min(2, amount / pot)   // capped at 2x pot
+      : -1;                          // -1 = not a bet action
+
+    // isLargeBet: true if bet > 70% of pot (polarized sizing, more often a bluff or monster)
+    const isLargeBet  = betRatio >= 0.70;
+    // isSmallBet: true if bet < 35% of pot (blocking/thin value sizing)
+    const isSmallBet  = betRatio >= 0 && betRatio < 0.35;
+
     this.actionLog.push({
       action,
       t,
-      handId:  this.currentHandId,
-      outcome: null,
+      handId:   this.currentHandId,
+      outcome:  null,
+      betRatio,       // pot-relative size (-1 if not a bet)
+      isLargeBet,
+      isSmallBet,
       metrics: {
         blinkRate,
         eyeBlink:        avg('eyeBlink'),
@@ -457,31 +471,89 @@ class TellDetector {
         descHigh: 'Looks away more before folding — disengaging before giving up',
         descLow:  'Same gaze when folding vs staying in hand',
       },
+
+      // ── BET SIZING TELLS ──────────────────────────────────────────────────
+      // Large bets (>70% pot) vs small bets (<35% pot) — sizing signals intent
+      {
+        id: 'freeze_overbet', metric: 'headFreeze', type: 'large_vs_small',
+        name: 'Head Freeze — Large vs Small Bets',
+        icon: '🧊', cat: 'Bet Sizing',
+        descHigh: 'Goes stiller on large overbets than small bets — tension when committing big chips, often a bluff tell',
+        descLow:  'Same composure on big and small bets — good at hiding sizing intent',
+      },
+      {
+        id: 'smile_overbet', metric: 'smile', type: 'small_vs_large',
+        name: 'Micro-Smile — Small vs Large Bets',
+        icon: '🙂', cat: 'Bet Sizing',
+        descHigh: 'Smiles more on small bets than large — happiness leaks on thin-value hands, tighter on bluffs',
+        descLow:  'Same expression regardless of bet size',
+      },
+      {
+        id: 'lipPress_overbet', metric: 'lipPress', type: 'large_vs_small',
+        name: 'Lip Compression — Large vs Small Bets',
+        icon: '😬', cat: 'Bet Sizing',
+        descHigh: 'Lip compression increases on large bets — anxiety when putting in big chips, classic bluff overbet tell',
+        descLow:  'Relaxed lips on both big and small bets',
+      },
+      {
+        id: 'eyeAway_overbet', metric: 'eyeLookAway', type: 'large_vs_small',
+        name: 'Gaze Aversion — Large vs Small Bets',
+        icon: '👀', cat: 'Bet Sizing',
+        descHigh: 'Looks away more on large bets — avoiding eye contact when committing a lot, often bluffing',
+        descLow:  'Maintains gaze on big bets — confident with large sizing',
+      },
+      {
+        id: 'lean_overbet', metric: 'leanForward', type: 'small_vs_large',
+        name: 'Forward Lean — Small vs Large Bets',
+        icon: '↗️', cat: 'Bet Sizing',
+        descHigh: 'Leans forward more on small bets — engaged with thin-value hands; backs off on overbets',
+        descLow:  'Same posture on all bet sizes',
+      },
     ];
   }
 
   // ── Report generation ──────────────────────────────────────────────────────
   getReport() {
-    const all     = this.actionLog.filter(e => e.outcome !== null);
-    const agg     = all.filter(e => e.action === 'bet' || e.action === 'raise');
-    const pass    = all.filter(e => e.action === 'check' || e.action === 'call');
-    const folds   = all.filter(e => e.action === 'fold');
-    const stay    = all.filter(e => e.action !== 'fold');
-    const strong  = all.filter(e => e.outcome === 'player');
-    const weak    = all.filter(e => e.outcome === 'bot' || e.outcome === 'split');
-    const valueBets = agg.filter(e => e.outcome === 'player');
-    const bluffs    = agg.filter(e => e.outcome === 'bot' || e.outcome === 'split');
+    // Use ALL logged actions (with or without outcome) for sizing-based tells
+    // Use only resolved actions for outcome-based tells
+    const allResolved = this.actionLog.filter(e => e.outcome !== null);
+    const allActions  = this.actionLog; // includes unresolved (current hand)
+
+    const agg       = allActions.filter(e => e.action === 'bet' || e.action === 'raise');
+    const pass      = allActions.filter(e => e.action === 'check' || e.action === 'call');
+    const folds     = allActions.filter(e => e.action === 'fold');
+    const stay      = allActions.filter(e => e.action !== 'fold');
+
+    // Outcome-based groups (only resolved hands)
+    const strong    = allResolved.filter(e => e.outcome === 'player');
+    const weak      = allResolved.filter(e => e.outcome === 'bot' || e.outcome === 'split');
+    const aggRes    = allResolved.filter(e => e.action === 'bet' || e.action === 'raise');
+    const valueBets = aggRes.filter(e => e.outcome === 'player');
+    const lostBets  = aggRes.filter(e => e.outcome !== 'player');
+
+    // Bet-sizing groups (based on pot ratio, no outcome needed)
+    const largeBets = agg.filter(e => e.isLargeBet === true);
+    const smallBets = agg.filter(e => e.isSmallBet === true);
+
+    // Sizing stats for display
+    const avgBetRatio = agg.length
+      ? agg.filter(e => e.betRatio >= 0).reduce((s, e) => s + e.betRatio, 0) / agg.filter(e => e.betRatio >= 0).length
+      : null;
+    const overbetCount = largeBets.length;
+    const smallBetCount = smallBets.length;
 
     const tells = this._getTells().map(tell => {
       let grpA, grpB;
       switch (tell.type) {
         case 'agg_vs_pass':    grpA = agg;       grpB = pass;     break;
         case 'pass_vs_agg':    grpA = pass;      grpB = agg;      break;
-        case 'value_vs_bluff': grpA = valueBets; grpB = bluffs;   break;
-        case 'bluff_vs_value': grpA = bluffs;    grpB = valueBets;break;
+        case 'value_vs_bluff': grpA = valueBets; grpB = lostBets; break;
+        case 'bluff_vs_value': grpA = lostBets;  grpB = valueBets;break;
         case 'strong_vs_weak': grpA = strong;    grpB = weak;     break;
         case 'weak_vs_strong': grpA = weak;      grpB = strong;   break;
         case 'fold_vs_stay':   grpA = folds;     grpB = stay;     break;
+        case 'large_vs_small': grpA = largeBets; grpB = smallBets;break;
+        case 'small_vs_large': grpA = smallBets; grpB = largeBets;break;
         default:               grpA = agg;       grpB = pass;
       }
 
@@ -527,13 +599,18 @@ class TellDetector {
     });
 
     return {
-      totalSamples:   all.length,
-      unresolved:     this.actionLog.filter(e => !e.outcome).length,
+      totalSamples:   allResolved.length,
       bettingSamples: agg.length,
       passiveSamples: pass.length,
       foldSamples:    folds.length,
+      // Outcome-based (only reliable after enough resolved hands)
       valueSamples:   valueBets.length,
-      bluffSamples:   bluffs.length,
+      lostBetSamples: lostBets.length,
+      // Sizing-based stats
+      avgBetRatio,
+      overbetCount,
+      smallBetCount,
+      totalBets:      agg.filter(e => e.betRatio >= 0).length,
       tells:          sorted,
       byCategory:     cats,
     };
