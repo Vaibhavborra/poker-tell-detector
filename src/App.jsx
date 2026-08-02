@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { PokerGame } from './game/engine';
 import CameraOverlay from './CameraOverlay';
+import TellsPanel from './TellsPanel';
+import { tellDetector } from './analysis/TellDetector';
 
 const SUITS = {
   h: { symbol: '♥', color: '#d42b2b' },
@@ -203,6 +205,7 @@ export default function App() {
   const finishHand = () => {
     const result = engineRef.current.getState().handLog?.result;
     if (!result) return;
+    tellDetector.updateOutcome(result.winner);
     let msg = result.method === 'fold'
       ? `${result.winner === 'player' ? 'You win' : 'Bot wins'} by fold.`
       : `${result.winner === 'player' ? 'You win' : result.winner === 'bot' ? 'Bot wins' : 'Split pot'} — ${result.playerHand?.name ?? 'showdown'}.`;
@@ -215,6 +218,7 @@ export default function App() {
     if (!(gameState?.toAct === 'player' && !botThinking && !isDealing && !gameState?.winner)) return;
     const success = engineRef.current.playerAction(action, amount);
     if (success === false) return;
+    tellDetector.recordAction(action);
     setMessage(action === 'fold' || action === 'check' ? `You ${action}.` : `You ${action} ${amount}.`);
     setRaiseMode(false);
     syncState();
@@ -244,6 +248,7 @@ export default function App() {
         <div style={metaRow}>
           <span style={metaChip}>Hand {gameState.handNumber}</span>
           <span style={metaChip}>{gameState.street}</span>
+          <TellsPanel />
         </div>
       </div>
 

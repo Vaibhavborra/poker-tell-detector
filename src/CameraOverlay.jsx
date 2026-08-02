@@ -1,9 +1,57 @@
 import { useEffect, useRef, useState } from 'react';
+import { tellDetector } from './analysis/TellDetector';
 
 const MARGIN = 14;
-const SMALL  = { w: 92,  h: 124 };
-const LARGE  = { w: 158, h: 212 };
+const SMALL  = { w: 108, h: 144 };
+const LARGE  = { w: 168, h: 224 };
 
+// ── Mesh colors ──────────────────────────────────────────────────────────────
+const CLR = {
+  mesh:    'rgba(77,201,167,0.12)',
+  eye:     'rgba(77,201,167,0.75)',
+  brow:    'rgba(245,200,66,0.75)',
+  lips:    'rgba(255,120,120,0.65)',
+  oval:    'rgba(77,201,167,0.25)',
+};
+
+// ── FaceMesh lazy loader ─────────────────────────────────────────────────────
+let faceLandmarker = null;
+let faceLoading    = false;
+let DrawingUtilsClass = null;
+let FaceLandmarkerClass = null;
+
+async function loadFaceMesh() {
+  if (faceLandmarker) return faceLandmarker;
+  if (faceLoading)    return null;
+  faceLoading = true;
+  try {
+    const vision = await import('@mediapipe/tasks-vision');
+    const { FaceLandmarker, FilesetResolver, DrawingUtils } = vision;
+    FaceLandmarkerClass = FaceLandmarker;
+    DrawingUtilsClass   = DrawingUtils;
+
+    const filesetResolver = await FilesetResolver.forVisionTasks(
+      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
+    );
+    faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
+      baseOptions: {
+        modelAssetPath:
+          'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+        delegate: 'CPU',
+      },
+      outputFaceBlendshapes: true,
+      runningMode: 'VIDEO',
+      numFaces: 1,
+    });
+    return faceLandmarker;
+  } catch (e) {
+    console.warn('FaceMesh failed to load:', e);
+    faceLoading = false;
+    return null;
+  }
+}
+
+// ── Corner helpers ───────────────────────────────────────────────────────────
 function cornerPos(c, size) {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
@@ -12,39 +60,41 @@ function cornerPos(c, size) {
   if (c === 2) return { x: MARGIN,                y: vh - size.h - MARGIN };
   return           { x: vw - size.w - MARGIN,  y: vh - size.h - MARGIN };
 }
-
 function nearestCorner(x, y, size) {
   const cx = x + size.w / 2;
   const cy = y + size.h / 2;
-  const isLeft = cx < window.innerWidth  / 2;
-  const isTop  = cy < window.innerHeight / 2;
-  return (isTop ? 0 : 2) + (isLeft ? 0 : 1);
+  return (cy < window.innerHeight / 2 ? 0 : 2) + (cx < window.innerWidth / 2 ? 0 : 1);
 }
 
+// ── Component ────────────────────────────────────────────────────────────────
 export default function CameraOverlay() {
   const videoRef     = useRef(null);
+  const canvasRef    = useRef(null);
   const containerRef = useRef(null);
+  const rafRef       = useRef(null);
+  const drawUtilRef  = useRef(null);
   const dragRef      = useRef(null);
+  const lastVideoTs  = useRef(-1);
 
-  // Use refs for values needed inside touch handlers to avoid stale closures
-  const cornerRef   = useRef(3);   // start bottom-right
+  const cornerRef   = useRef(3);
   const expandedRef = useRef(false);
   const posRef      = useRef(null);
   const sizeRef     = useRef(SMALL);
 
   const [corner,   setCorner]   = useState(3);
   const [expanded, setExpanded] = useState(false);
-  const [pos,      setPos]      = useState(null);   // {x,y} while dragging
+  const [pos,      setPos]      = useState(null);
   const [dragging, setDragging] = useState(false);
   const [camError, setCamError] = useState(false);
+  const [faceReady, setFaceReady] = useState(false);
+  const [faceDetected, setFaceDetected] = useState(false);
 
-  // Keep refs in sync with state
   cornerRef.current   = corner;
   expandedRef.current = expanded;
   posRef.current      = pos;
   sizeRef.current     = expanded ? LARGE : SMALL;
 
-  // ── Camera access ────────────────────────────────────────────────────────
+  // ── Camera access ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (!navigator.mediaDevices?.getUserMedia) { setCamError(true); return; }
     navigator.mediaDevices
@@ -53,35 +103,117 @@ export default function CameraOverlay() {
         if (videoRef.current) { videoRef.current.srcObject = stream; }
       })
       .catch(() => setCamError(true));
+
+    // Load face mesh in background
+    loadFaceMesh().then(lm => { if (lm) setFaceReady(true); });
+
     return () => {
       if (videoRef.current?.srcObject) {
         videoRef.current.srcObject.getTracks().forEach(t => t.stop());
       }
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
   }, []);
 
-  // ── Collapse when tapping outside (while expanded) ───────────────────────
+  // ── Face detection loop ────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!faceReady) return;
+    const video  = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+
+    let running = true;
+
+    const loop = () => {
+      if (!running) return;
+      rafRef.current = requestAnimationFrame(loop);
+
+      if (video.readyState < 2) return; // not ready yet
+
+      // Sync canvas size to its displayed size
+      const { clientWidth: w, clientHeight: h } = canvas;
+      if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+      if (!w || !h) return;
+
+      const ctx = canvas.getContext('2d');
+
+      // Init DrawingUtils once
+      if (!drawUtilRef.current && DrawingUtilsClass) {
+        drawUtilRef.current = new DrawingUtilsClass(ctx);
+      }
+
+      // Run face detection ~15fps (skip every other frame via videoTimestamp)
+      const now = performance.now();
+      if (now - lastVideoTs.current < 66) return; // ~15fps
+      lastVideoTs.current = now;
+
+      let results;
+      try {
+        results = faceLandmarker.detectForVideo(video, now);
+      } catch {
+        return;
+      }
+
+      ctx.clearRect(0, 0, w, h);
+
+      const hasface = results.faceLandmarks?.length > 0;
+      setFaceDetected(hasface);
+
+      if (hasface) {
+        // Feed biometrics to tell detector
+        tellDetector.addFrame(results.faceBlendshapes, results.faceLandmarks, Date.now());
+
+        if (drawUtilRef.current) {
+          const du = drawUtilRef.current;
+          const FL = FaceLandmarkerClass;
+
+          // Draw mesh layers (outermost first → innermost)
+          du.drawConnectors(results.faceLandmarks[0], FL.FACE_LANDMARKS_TESSELATION,
+            { color: CLR.mesh, lineWidth: 0.4 });
+          du.drawConnectors(results.faceLandmarks[0], FL.FACE_LANDMARKS_FACE_OVAL,
+            { color: CLR.oval, lineWidth: 1.2 });
+          du.drawConnectors(results.faceLandmarks[0], FL.FACE_LANDMARKS_LEFT_EYEBROW,
+            { color: CLR.brow, lineWidth: 1.5 });
+          du.drawConnectors(results.faceLandmarks[0], FL.FACE_LANDMARKS_RIGHT_EYEBROW,
+            { color: CLR.brow, lineWidth: 1.5 });
+          du.drawConnectors(results.faceLandmarks[0], FL.FACE_LANDMARKS_LEFT_EYE,
+            { color: CLR.eye, lineWidth: 1.5 });
+          du.drawConnectors(results.faceLandmarks[0], FL.FACE_LANDMARKS_RIGHT_EYE,
+            { color: CLR.eye, lineWidth: 1.5 });
+          du.drawConnectors(results.faceLandmarks[0], FL.FACE_LANDMARKS_LIPS,
+            { color: CLR.lips, lineWidth: 1.2 });
+
+          // Live metric indicators
+          const cur = tellDetector.getCurrent();
+          if (cur) drawLiveIndicators(ctx, w, h, cur);
+        }
+      } else {
+        // No face: draw scanning reticle
+        drawReticle(ctx, w, h, now);
+      }
+    };
+
+    rafRef.current = requestAnimationFrame(loop);
+    return () => { running = false; cancelAnimationFrame(rafRef.current); };
+  }, [faceReady]);
+
+  // ── Collapse on outside tap ────────────────────────────────────────────────
   useEffect(() => {
     if (!expanded) return;
-    const handler = (e) => {
-      if (!containerRef.current?.contains(e.target)) setExpanded(false);
-    };
-    document.addEventListener('touchstart', handler, { passive: true });
-    return () => document.removeEventListener('touchstart', handler);
+    const h = (e) => { if (!containerRef.current?.contains(e.target)) setExpanded(false); };
+    document.addEventListener('touchstart', h, { passive: true });
+    return () => document.removeEventListener('touchstart', h);
   }, [expanded]);
 
-  // ── Touch handlers ───────────────────────────────────────────────────────
+  // ── Touch drag/tap ─────────────────────────────────────────────────────────
   const onTouchStart = (e) => {
     e.stopPropagation();
     const touch = e.touches[0];
     const cur = posRef.current ?? cornerPos(cornerRef.current, sizeRef.current);
     dragRef.current = {
-      startX: touch.clientX,
-      startY: touch.clientY,
-      startT: Date.now(),
-      moved:  false,
-      offX:   touch.clientX - cur.x,
-      offY:   touch.clientY - cur.y,
+      startX: touch.clientX, startY: touch.clientY,
+      startT: Date.now(), moved: false,
+      offX: touch.clientX - cur.x, offY: touch.clientY - cur.y,
     };
     setDragging(true);
   };
@@ -89,47 +221,27 @@ export default function CameraOverlay() {
   const onTouchMove = (e) => {
     if (!dragRef.current) return;
     const touch = e.touches[0];
-    const dx = touch.clientX - dragRef.current.startX;
-    const dy = touch.clientY - dragRef.current.startY;
-    if (Math.abs(dx) > 6 || Math.abs(dy) > 6) dragRef.current.moved = true;
-    const newPos = {
-      x: touch.clientX - dragRef.current.offX,
-      y: touch.clientY - dragRef.current.offY,
-    };
-    posRef.current = newPos;
-    setPos(newPos);
+    if (Math.abs(touch.clientX - dragRef.current.startX) > 6 ||
+        Math.abs(touch.clientY - dragRef.current.startY) > 6) dragRef.current.moved = true;
+    const p = { x: touch.clientX - dragRef.current.offX, y: touch.clientY - dragRef.current.offY };
+    posRef.current = p;
+    setPos(p);
   };
 
   const onTouchEnd = () => {
     if (!dragRef.current) return;
     const { moved, startT } = dragRef.current;
     dragRef.current = null;
-
     if (!moved && Date.now() - startT < 280) {
-      // ── Tap: toggle expanded ──
-      setExpanded(ex => !ex);
-      setDragging(false);
-      setPos(null);
-      posRef.current = null;
-      return;
+      setExpanded(ex => !ex); setDragging(false); setPos(null); posRef.current = null; return;
     }
-
-    // ── Drag end: two-phase snap ──
-    // Phase 1: enable transition while element is still at drag position
     setDragging(false);
-    const lastPos = posRef.current ?? cornerPos(cornerRef.current, sizeRef.current);
-    const snap = nearestCorner(lastPos.x, lastPos.y, sizeRef.current);
-
-    // Phase 2 (next frame): update corner → CSS transition animates the snap
-    requestAnimationFrame(() => {
-      setCorner(snap);
-      cornerRef.current = snap;
-      setPos(null);
-      posRef.current = null;
-    });
+    const last = posRef.current ?? cornerPos(cornerRef.current, sizeRef.current);
+    const snap = nearestCorner(last.x, last.y, sizeRef.current);
+    requestAnimationFrame(() => { setCorner(snap); cornerRef.current = snap; setPos(null); posRef.current = null; });
   };
 
-  // ── Render ───────────────────────────────────────────────────────────────
+  // ── Render ─────────────────────────────────────────────────────────────────
   const size = expanded ? LARGE : SMALL;
   const displayPos = pos ?? cornerPos(corner, size);
 
@@ -140,73 +252,104 @@ export default function CameraOverlay() {
       onTouchMove={onTouchMove}
       onTouchEnd={onTouchEnd}
       style={{
-        position:    'fixed',
-        left:        displayPos.x,
-        top:         displayPos.y,
-        width:       size.w,
-        height:      size.h,
-        zIndex:      999,
+        position: 'fixed',
+        left: displayPos.x, top: displayPos.y,
+        width: size.w, height: size.h,
+        zIndex: 999,
         borderRadius: expanded ? 22 : 18,
-        overflow:    'hidden',
-        background:  '#0a0a0a',
-        border:      '2px solid rgba(255,255,255,0.22)',
-        boxShadow:   expanded
-          ? '0 16px 48px rgba(0,0,0,0.65), 0 4px 12px rgba(0,0,0,0.4)'
-          : '0 8px 28px rgba(0,0,0,0.55), 0 2px 6px rgba(0,0,0,0.3)',
+        overflow: 'hidden',
+        background: '#050d14',
+        border: faceDetected
+          ? '2px solid rgba(77,201,167,0.6)'
+          : '2px solid rgba(255,255,255,0.18)',
+        boxShadow: expanded
+          ? '0 16px 48px rgba(0,0,0,0.65)'
+          : '0 8px 28px rgba(0,0,0,0.55)',
         touchAction: 'none',
-        userSelect:  'none',
-        cursor:      'grab',
-        transition:  dragging
-          // During drag: no position transition, but still animate size/radius
-          ? 'width 0.22s ease, height 0.22s ease, border-radius 0.22s ease, box-shadow 0.22s ease'
-          // Snap + resize: smooth spring-like easing
+        userSelect: 'none',
+        cursor: 'grab',
+        transition: dragging
+          ? 'width 0.22s ease, height 0.22s ease, border-radius 0.22s ease, border-color 0.3s ease'
           : [
               'left 0.38s cubic-bezier(0.25,0.46,0.45,0.94)',
               'top 0.38s cubic-bezier(0.25,0.46,0.45,0.94)',
               'width 0.28s cubic-bezier(0.34,1.56,0.64,1)',
               'height 0.28s cubic-bezier(0.34,1.56,0.64,1)',
               'border-radius 0.25s ease',
-              'box-shadow 0.25s ease',
+              'border-color 0.3s ease',
             ].join(', '),
       }}
     >
       {camError ? (
-        <div style={{
-          width: '100%', height: '100%',
-          display: 'flex', flexDirection: 'column',
-          alignItems: 'center', justifyContent: 'center',
-          gap: 6, padding: 10,
-        }}>
-          <span style={{ fontSize: 28 }}>📷</span>
-          <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.5)', textAlign: 'center', lineHeight: 1.4 }}>
-            Camera{'\n'}unavailable
-          </span>
+        <div style={{ width:'100%',height:'100%',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:6 }}>
+          <span style={{ fontSize: 26 }}>📷</span>
+          <span style={{ fontSize: 10, color:'rgba(255,255,255,0.4)', textAlign:'center', padding:'0 8px', lineHeight:1.4 }}>Camera unavailable</span>
         </div>
       ) : (
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted
-          style={{
-            width: '100%', height: '100%',
-            objectFit: 'cover',
-            transform: 'scaleX(-1)', // mirror like a selfie camera
-            display: 'block',
-          }}
-        />
+        <>
+          <video
+            ref={videoRef}
+            autoPlay playsInline muted
+            style={{ position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'cover', transform:'scaleX(-1)', display:'block' }}
+          />
+          <canvas
+            ref={canvasRef}
+            style={{ position:'absolute', inset:0, width:'100%', height:'100%', transform:'scaleX(-1)', pointerEvents:'none' }}
+          />
+          {/* Status dot */}
+          <div style={{
+            position: 'absolute', top: 7, right: 8,
+            width: 7, height: 7, borderRadius: '50%',
+            background: faceDetected ? '#4dc9a7' : faceReady ? '#f5c842' : '#888',
+            boxShadow: faceDetected ? '0 0 6px #4dc9a7' : 'none',
+            transition: 'background 0.4s, box-shadow 0.4s',
+          }} />
+        </>
       )}
 
-      {/* Subtle drag-handle indicator */}
+      {/* Drag handle */}
       {!expanded && (
         <div style={{
-          position: 'absolute', bottom: 6, left: '50%',
-          transform: 'translateX(-50%)',
-          width: 28, height: 3, borderRadius: 2,
-          background: 'rgba(255,255,255,0.35)',
-          pointerEvents: 'none',
+          position:'absolute', bottom:5, left:'50%', transform:'translateX(-50%)',
+          width:26, height:3, borderRadius:2,
+          background:'rgba(255,255,255,0.3)', pointerEvents:'none',
         }} />
       )}
     </div>
   );
+}
+
+// ── Canvas helpers ──────────────────────────────────────────────────────────
+function drawReticle(ctx, w, h, now) {
+  const cx = w / 2, cy = h / 2;
+  const sz = Math.min(w, h) * 0.32;
+  const t = now / 1000;
+  const alpha = 0.3 + 0.2 * Math.sin(t * 2);
+  ctx.strokeStyle = `rgba(77,201,167,${alpha})`;
+  ctx.lineWidth = 1.5;
+  const len = sz * 0.35;
+  const corners = [[-1,-1],[1,-1],[1,1],[-1,1]];
+  corners.forEach(([sx, sy]) => {
+    const ox = cx + sx * sz; const oy = cy + sy * sz;
+    ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(ox - sx * len, oy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(ox, oy - sy * len); ctx.stroke();
+  });
+}
+
+function drawLiveIndicators(ctx, w, h, cur) {
+  // Tiny signal bars in top-left
+  const signals = [
+    { val: cur.blink,     color: '#ff8888', label: 'B' },
+    { val: cur.browRaise, color: '#f5c842', label: 'E' },
+    { val: cur.smile,     color: '#4dc9a7', label: 'S' },
+    { val: cur.lipPress,  color: '#a87af0', label: 'L' },
+  ];
+  signals.forEach(({ val, color }, i) => {
+    const x = 6 + i * 9;
+    const barH = Math.round(val * 12);
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.fillRect(x, 6, 6, 14);
+    ctx.fillStyle = color;
+    ctx.fillRect(x, 6 + (14 - barH), 6, barH);
+  });
 }
