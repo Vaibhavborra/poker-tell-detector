@@ -172,7 +172,7 @@ export default function App() {
       syncState();
     }, reducedMotion ? 800 : 1600);
     return () => clearTimeout(botTimer.current);
-  }, [gameState?.toAct, gameState?.winner, isDealing, reducedMotion]);
+  }, [gameState?.toAct, gameState?.street, gameState?.winner, isDealing, reducedMotion]);
 
   useEffect(() => {
     if (!gameState?.winner) return;
