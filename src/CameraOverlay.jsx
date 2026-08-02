@@ -337,19 +337,20 @@ function drawReticle(ctx, w, h, now) {
 }
 
 function drawLiveIndicators(ctx, w, h, cur) {
-  // Tiny signal bars in top-left
   const signals = [
-    { val: cur.blink,     color: '#ff8888', label: 'B' },
-    { val: cur.browRaise, color: '#f5c842', label: 'E' },
-    { val: cur.smile,     color: '#4dc9a7', label: 'S' },
-    { val: cur.lipPress,  color: '#a87af0', label: 'L' },
+    { val: cur.blink,     color: '#ff8888' },
+    { val: cur.browRaise, color: '#f5c842' },
+    { val: cur.smile,     color: '#4dc9a7' },
+    { val: cur.lipPress,  color: '#a87af0' },
+    { val: cur.eyeWide,   color: '#60b8ff' },
+    { val: cur.noseSneer, color: '#ff9944' },
   ];
   signals.forEach(({ val, color }, i) => {
-    const x = 6 + i * 9;
-    const barH = Math.round(val * 12);
-    ctx.fillStyle = 'rgba(0,0,0,0.4)';
-    ctx.fillRect(x, 6, 6, 14);
+    const x = 5 + i * 8;
+    const barH = Math.round(val * 13);
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.fillRect(x, 5, 6, 15);
     ctx.fillStyle = color;
-    ctx.fillRect(x, 6 + (14 - barH), 6, barH);
+    ctx.fillRect(x, 5 + (15 - barH), 6, barH);
   });
 }
