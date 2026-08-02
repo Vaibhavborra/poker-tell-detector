@@ -159,10 +159,18 @@ export default function App() {
   }, [dealStep, gameState, isDealing, reducedMotion]);
 
   useEffect(() => {
-    if (!gameState || gameState.winner || isDealing || gameState.toAct !== 'bot') return;
+    if (!gameState || gameState.winner || isDealing || botThinking || gameState.toAct !== 'bot') return;
+    // Guard: only fire if the engine agrees it's the bot's turn
+    if (!engineRef.current.canAct('bot')) return;
     setBotThinking(true);
     setMessage('Bot is thinking…');
     botTimer.current = setTimeout(() => {
+      // Double-check engine state hasn't changed under us
+      if (!engineRef.current.canAct('bot')) {
+        setBotThinking(false);
+        syncState();
+        return;
+      }
       const d = engineRef.current.botAction();
       if (d) {
         const { action, amount } = d;
@@ -172,7 +180,7 @@ export default function App() {
       syncState();
     }, reducedMotion ? 800 : 1600);
     return () => clearTimeout(botTimer.current);
-  }, [gameState?.toAct, gameState?.street, gameState?.winner, isDealing, reducedMotion]);
+  }, [gameState?.toAct, gameState?.street, gameState?.winner, isDealing, botThinking, reducedMotion]);
 
   useEffect(() => {
     if (!gameState?.winner) return;
