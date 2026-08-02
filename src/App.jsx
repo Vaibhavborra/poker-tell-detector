@@ -102,10 +102,11 @@ function BetBadge({ amount }) {
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
-  const engineRef     = useRef(new PokerGame());
-  const nextHandTimer = useRef(null);
-  const botTimer      = useRef(null);
-  const dealTimer     = useRef(null);
+  const engineRef      = useRef(new PokerGame());
+  const nextHandTimer  = useRef(null);
+  const botTimer       = useRef(null);
+  const dealTimer      = useRef(null);
+  const botThinkingRef = useRef(false); // ref so effect deps don't include it
 
   const [gameState,     setGameState]     = useState(null);
   const [message,       setMessage]       = useState('Dealing…');
@@ -159,14 +160,18 @@ export default function App() {
   }, [dealStep, gameState, isDealing, reducedMotion]);
 
   useEffect(() => {
-    if (!gameState || gameState.winner || isDealing || botThinking || gameState.toAct !== 'bot') return;
-    // Guard: only fire if the engine agrees it's the bot's turn
+    if (!gameState || gameState.winner || isDealing || gameState.toAct !== 'bot') return;
+    // Use ref to check thinking state without adding it to deps (which would cancel the timer)
+    if (botThinkingRef.current) return;
     if (!engineRef.current.canAct('bot')) return;
+
+    botThinkingRef.current = true;
     setBotThinking(true);
     setMessage('Bot is thinking…');
+
     botTimer.current = setTimeout(() => {
-      // Double-check engine state hasn't changed under us
       if (!engineRef.current.canAct('bot')) {
+        botThinkingRef.current = false;
         setBotThinking(false);
         syncState();
         return;
@@ -176,11 +181,13 @@ export default function App() {
         const { action, amount } = d;
         setMessage(action === 'fold' || action === 'check' ? `Bot ${action}.` : `Bot ${action} ${amount}.`);
       }
+      botThinkingRef.current = false;
       setBotThinking(false);
       syncState();
     }, reducedMotion ? 800 : 1600);
+
     return () => clearTimeout(botTimer.current);
-  }, [gameState?.toAct, gameState?.street, gameState?.winner, isDealing, botThinking, reducedMotion]);
+  }, [gameState?.toAct, gameState?.street, gameState?.winner, isDealing, reducedMotion]);
 
   useEffect(() => {
     if (!gameState?.winner) return;
