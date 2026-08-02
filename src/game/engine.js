@@ -277,30 +277,39 @@ export class PokerGame {
       return;
     }
 
+    const actorStack = actor === 'player' ? this.playerStack : this.botStack;
+
     if (action === 'check') {
       if (this.currentBet > 0 && actorCommit < this.currentBet)
         throw new Error('Cannot check when a bet is outstanding.');
       this._logAction(actor, 'check', 0);
     } else if (action === 'bet') {
       if (this.currentBet !== 0) throw new Error('Cannot bet; use raise.');
-      this.currentBet = amount;
-      this._applyCommit(actor, amount);
-      this.pot += amount - actorCommit;
-      this._logAction(actor, 'bet', amount);
+      // Cap to available stack (all-in)
+      const betAmt = Math.min(amount, actorStack);
+      this.currentBet = betAmt;
+      this._applyCommit(actor, betAmt);
+      this.pot += betAmt - actorCommit;
+      this._logAction(actor, 'bet', betAmt);
     } else if (action === 'call') {
       if (this.currentBet === 0) throw new Error('Nothing to call.');
-      const contrib = this.currentBet - actorCommit;
-      this._applyCommit(actor, this.currentBet);
+      // Cap call to available stack (all-in call)
+      const callTarget = Math.min(this.currentBet, actorCommit + actorStack);
+      const contrib = callTarget - actorCommit;
+      this._applyCommit(actor, callTarget);
       this.pot += contrib;
       this._logAction(actor, 'call', contrib);
     } else if (action === 'raise') {
       if (this.currentBet === 0) throw new Error('No bet to raise.');
-      const newBet  = this.currentBet + amount;
-      const contrib = newBet - actorCommit;
+      // Max raise amount = what actor can still put in after calling
+      const maxRaise = actorStack - (this.currentBet - actorCommit);
+      const safeAmt  = Math.min(amount, Math.max(0, maxRaise));
+      const newBet   = this.currentBet + safeAmt;
+      const contrib  = newBet - actorCommit;
       this.currentBet = newBet;
       this._applyCommit(actor, newBet);
       this.pot += contrib;
-      this._logAction(actor, 'raise', amount);
+      this._logAction(actor, 'raise', safeAmt);
     } else {
       throw new Error(`Unknown action: ${action}`);
     }

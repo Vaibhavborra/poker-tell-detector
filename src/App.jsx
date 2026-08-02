@@ -231,7 +231,10 @@ export default function App() {
 
   const callAmount     = Math.max(gameState.currentBet - gameState.playerCommit, 0);
   const minWager       = Math.max(BB, callAmount || BB);
-  const maxWager       = Math.max(0, gameState.playerStack);
+  // For a raise, player needs raiseAmount + callCost chips total.
+  // So max raise amount = playerStack - callCost.
+  // For a bet (no current bet) the full stack is available.
+  const maxWager       = Math.max(0, gameState.playerStack - callAmount);
   const actionDisabled = !(gameState.toAct === 'player' && !botThinking && !isDealing && !gameState.winner);
   const community      = [...gameState.community, null, null, null, null, null].slice(0, 5);
   const hasBet         = gameState.availableActions.includes('bet');
